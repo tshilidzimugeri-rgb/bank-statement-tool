@@ -37,6 +37,10 @@ def sha256_of_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def sha256_of_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
 class ProcessedStore:
     def __init__(self, db_path: Path):
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -51,6 +55,15 @@ class ProcessedStore:
                 "SELECT 1 FROM processed_statements WHERE source_id = ? AND content_hash = ?",
                 (source_id, content_hash),
             )
+            return cur.fetchone() is not None
+
+    def has_source_id(self, source_id: str) -> bool:
+        """True if this source_id was recorded under any content hash - lets
+        email mode skip re-downloading an attachment it has already handled
+        without needing the bytes in hand first.
+        """
+        with closing(self._conn.cursor()) as cur:
+            cur.execute("SELECT 1 FROM processed_statements WHERE source_id = ?", (source_id,))
             return cur.fetchone() is not None
 
     def mark_processed(

@@ -34,8 +34,10 @@ class Settings:
     processed_db: Path
     output_workbook: Path
     incoming_pdfs_dir: Path
+    email_downloads_dir: Path
     gmail_client_secret_file: Path
     gmail_token_file: Path
+    gmail_lookback_days: int
     tesseract_cmd: str | None
     poppler_path: str | None
 
@@ -54,8 +56,10 @@ def load_settings(dotenv_path: Path | None = None) -> Settings:
         processed_db=_path("PROCESSED_DB", "data/processed/processed.db"),
         output_workbook=_path("OUTPUT_WORKBOOK", "output/combined_statements.xlsx"),
         incoming_pdfs_dir=_path("INCOMING_PDFS_DIR", "data/incoming_pdfs"),
+        email_downloads_dir=_path("EMAIL_DOWNLOADS_DIR", "data/email_downloads"),
         gmail_client_secret_file=_path("GMAIL_CLIENT_SECRET_FILE", "credentials.json"),
         gmail_token_file=_path("GMAIL_TOKEN_FILE", "token.json"),
+        gmail_lookback_days=int(os.environ.get("GMAIL_LOOKBACK_DAYS", "30")),
         tesseract_cmd=os.environ.get("TESSERACT_CMD"),
         poppler_path=os.environ.get("POPPLER_PATH"),
     )

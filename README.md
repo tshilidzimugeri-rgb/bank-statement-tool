@@ -1,11 +1,10 @@
 # statement-tool
 
-Turns client bank statement PDFs into one combined Excel workbook, and (once
-phase 2 is wired up) can pull the PDFs straight from a Gmail inbox on
-demand. Built incrementally:
+Turns client bank statement PDFs into one combined Excel workbook, and can
+pull the PDFs straight from a Gmail inbox on demand. Built incrementally:
 
 - **Phase 1 (done):** folder of PDFs -> combined `.xlsx`.
-- **Phase 2 (next):** Gmail search/download layered on top of the same
+- **Phase 2 (done):** Gmail search/download layered on top of the same
   parser, using the Gmail API with OAuth.
 
 ## Setup
@@ -80,6 +79,46 @@ Useful flags:
 - `--no-interactive` - never prompt for client mapping (for scripted runs);
   unmatched statements are labeled `UNMAPPED_CLIENT` instead.
 
+## Running (phase 2: Gmail)
+
+### One-time Google Cloud setup
+
+1. Go to https://console.cloud.google.com/ and create a project (or reuse one).
+2. **APIs & Services > Library** - enable the **Gmail API**.
+3. **APIs & Services > OAuth consent screen** - choose **External**, fill in
+   the required fields, and add your own Gmail address as a **test user**
+   (this keeps the app private to you without needing Google's review).
+4. **APIs & Services > Credentials > Create Credentials > OAuth client ID**
+   - application type **Desktop app**. Download the resulting JSON.
+5. Save that file as `credentials.json` in the project root (or anywhere,
+   and point `GMAIL_CLIENT_SECRET_FILE` in `.env` at it).
+
+### Running it
+
+```powershell
+.venv\Scripts\python -m statement_tool.cli fetch-email
+```
+
+The first run opens a browser window for you to sign in and grant
+**read-only** Gmail access (the tool never sends, labels, or deletes
+anything); it then caches the token to `token.json` (path configurable via
+`GMAIL_TOKEN_FILE`) so every run after that is silent - no repeated login.
+
+What it does:
+
+1. Builds a Gmail search query: any email with a PDF attachment in the last
+   `GMAIL_LOOKBACK_DAYS` (default 30) days, narrowed to senders/subjects
+   mentioned in `config/clients.yaml` once that file has real entries (an
+   empty/example config just searches all PDF-attachment mail).
+2. For each match, downloads PDF attachments not already recorded (by
+   message ID + attachment filename, and independently by content hash -
+   re-running is always safe), saving them to `data/email_downloads/`.
+3. Runs each one through the exact same parser/writer as `process-folder`,
+   using the email's sender/subject as extra signal for client matching.
+
+Flags: `--days N` (override the lookback window), `--reprocess`,
+`--no-interactive` - same meaning as in `process-folder`.
+
 ## Adding a new bank's layout
 
 Copy a block in `config/banks.yaml`, rename the key, and adjust:
@@ -120,6 +159,7 @@ src/statement_tool/
   models.py                # Transaction / StatementResult dataclasses
   store.py                  # SQLite "already processed" tracking
   excel_writer.py            # combined workbook read/append/format
+  gmail_client.py            # OAuth login, search, attachment download
   extract/
     bank_detect.py            # bank + client + statement-period detection
     column_map.py              # header row -> logical column mapping
@@ -128,6 +168,7 @@ src/statement_tool/
     amounts.py, dates.py           # shared value parsing
     parser.py                       # orchestrates the above per PDF
 data/incoming_pdfs/       # drop PDFs here for phase 1
+data/email_downloads/      # PDFs fetched via Gmail land here
 data/processed/            # processed.db (SQLite dedup record)
 output/                      # combined_statements.xlsx lands here
 tests/
@@ -135,7 +176,8 @@ tests/
 
 ## Credentials
 
-No credentials are needed for phase 1. Phase 2 will store the Gmail OAuth
-client secret and token cache as local files referenced from `.env`
-(`credentials.json`, `token.json`) - both are already in `.gitignore`, along
-with `.env` itself and the generated workbook/database.
+Phase 1 needs no credentials. Phase 2 stores the Gmail OAuth client secret
+and token cache as local files referenced from `.env` (`credentials.json`,
+`token.json` by default) - both are already in `.gitignore`, along with
+`.env` itself and the generated workbook/database, so none of it reaches
+source control.
