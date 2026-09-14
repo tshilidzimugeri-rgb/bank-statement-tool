@@ -1,0 +1,25 @@
+# Maps incoming statements to a client name.
+#
+# Each entry is one client. "match" is a list of case-insensitive substrings
+# that are checked against, in order:
+#   1. the sender email address / domain of the source email (email mode)
+#   2. the email subject line (email mode)
+#   3. the PDF filename
+#   4. the text on the first page of the PDF
+# The first client whose match list hits any of the above wins.
+#
+# If nothing matches, the tool will ask you to type the client name
+# interactively when running in a terminal, and will otherwise label the
+# statement "UNMAPPED_CLIENT" and flag it for manual review.
+#
+# Example (edit/replace with your real clients):
+clients:
+  - name: "Acme Trading CC"
+    match:
+      - "acme"
+      - "acmetrading.co.za"
+
+  - name: "Jane Dlamini"
+    match:
+      - "jane.dlamini@"
+      - "jane dlamini"

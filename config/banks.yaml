@@ -1,0 +1,121 @@
+# Per-bank detection and column-layout hints.
+#
+# "detect" - case-insensitive substrings looked for in the extracted text of
+#            a statement's first page. First bank that matches wins; if none
+#            match, the "generic" heuristics below are used instead.
+#
+# "period_patterns" - regexes (first capturing group = the statement period
+#            string) tried in order against the first page's text.
+#
+# "columns" - for each logical column, a list of header-text aliases the
+#            column-mapper will look for (case-insensitive, substring match)
+#            when it inspects the header row of a table pdfplumber extracts.
+#            Add a new bank by copying a block and adjusting these lists -
+#            no code changes required for a straightforward text-based
+#            statement.
+#
+# "amount_style":
+#   split  - debit and credit are separate columns (most SA banks)
+#   signed - a single "amount" column where negative = debit, positive = credit
+#
+banks:
+  fnb:
+    display_name: "FNB"
+    detect:
+      - "first national bank"
+      - "fnb.co.za"
+      - "www.fnb.co.za"
+    period_patterns:
+      - "statement period[:\\s]+([0-9A-Za-z /.\\-]+to[0-9A-Za-z /.\\-]+)"
+      - "statement date[:\\s]+([0-9A-Za-z /.\\-]+)"
+    amount_style: split
+    columns:
+      date: ["date"]
+      description: ["description", "particulars"]
+      debit: ["debit", "fees", "amount debited"]
+      credit: ["credit", "amount credited"]
+      balance: ["balance"]
+
+  standard_bank:
+    display_name: "Standard Bank"
+    detect:
+      - "standard bank"
+      - "standardbank.co.za"
+      - "the standard bank of south africa"
+    period_patterns:
+      - "statement period[:\\s]+([0-9A-Za-z /.\\-]+to[0-9A-Za-z /.\\-]+)"
+      - "period[:\\s]+([0-9A-Za-z /.\\-]+to[0-9A-Za-z /.\\-]+)"
+    amount_style: split
+    columns:
+      date: ["date", "transaction date"]
+      description: ["description", "transaction description"]
+      debit: ["debit", "withdrawal", "amount debited"]
+      credit: ["credit", "deposit", "amount credited"]
+      balance: ["balance"]
+
+  absa:
+    display_name: "ABSA"
+    detect:
+      - "absa bank"
+      - "absa.co.za"
+      - "amalgamated banks of south africa"
+    period_patterns:
+      - "statement period[:\\s]+([0-9A-Za-z /.\\-]+to[0-9A-Za-z /.\\-]+)"
+      - "from[:\\s]+([0-9A-Za-z /.\\-]+to[0-9A-Za-z /.\\-]+)"
+    amount_style: split
+    columns:
+      date: ["date"]
+      description: ["description", "transaction detail"]
+      debit: ["debit", "payments"]
+      credit: ["credit", "deposits"]
+      balance: ["balance"]
+
+  nedbank:
+    display_name: "Nedbank"
+    detect:
+      - "nedbank"
+      - "nedbank.co.za"
+    period_patterns:
+      - "statement period[:\\s]+([0-9A-Za-z /.\\-]+to[0-9A-Za-z /.\\-]+)"
+      - "statement date[:\\s]+([0-9A-Za-z /.\\-]+)"
+    amount_style: split
+    columns:
+      date: ["date", "posting date"]
+      description: ["description", "narrative"]
+      debit: ["debit", "amount debited"]
+      credit: ["credit", "amount credited"]
+      balance: ["balance"]
+
+  capitec:
+    display_name: "Capitec"
+    detect:
+      - "capitec bank"
+      - "capitecbank.co.za"
+    period_patterns:
+      - "statement period[:\\s]+([0-9A-Za-z /.\\-]+to[0-9A-Za-z /.\\-]+)"
+      - "date range[:\\s]+([0-9A-Za-z /.\\-]+to[0-9A-Za-z /.\\-]+)"
+    amount_style: signed
+    columns:
+      date: ["date", "posting date"]
+      description: ["description"]
+      amount: ["amount"]
+      balance: ["balance"]
+
+# Used when no "detect" strings match. Widens the alias lists so common
+# layouts from an unlisted bank still have a decent chance of being parsed.
+# Statements handled this way are always flagged "Bank detection: generic"
+# in the run summary so they get a look before you trust the numbers.
+generic:
+  display_name: "Unknown/Generic"
+  period_patterns:
+    - "statement period[:\\s]+([0-9A-Za-z /.\\-]+to[0-9A-Za-z /.\\-]+)"
+    - "period[:\\s]+([0-9A-Za-z /.\\-]+to[0-9A-Za-z /.\\-]+)"
+    - "statement date[:\\s]+([0-9A-Za-z /.\\-]+)"
+  amount_style: split
+  columns:
+    date: ["date", "transaction date", "posting date"]
+    description: ["description", "narrative", "particulars", "transaction detail", "details"]
+    debit: ["debit", "withdrawal", "withdrawals", "payments", "amount debited"]
+    credit: ["credit", "deposit", "deposits", "amount credited"]
+    balance: ["balance", "closing balance"]
+    amount: ["amount"]

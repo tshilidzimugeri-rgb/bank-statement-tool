@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.env
+token.json
+credentials.json
+data/processed/*.db
+data/incoming_pdfs/*.pdf
+output/*.xlsx
+*.log
