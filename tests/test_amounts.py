@@ -33,3 +33,11 @@ def test_parse_date_common_formats():
 def test_parse_date_unparsable_returns_none():
     assert parse_date("not a date") is None
     assert parse_date("") is None
+
+
+def test_parse_amount_attached_cr_dr_suffix():
+    # FNB prints the suffix straight after the number.
+    assert parse_amount("1,950.71Cr") == 1950.71
+    assert parse_amount("27.98Dr") == -27.98
+    assert parse_amount("190.00 Cr") == 190.00
+    assert parse_amount("R1 234.50 Dr") == -1234.50

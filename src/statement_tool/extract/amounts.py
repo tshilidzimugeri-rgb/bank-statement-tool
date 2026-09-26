@@ -26,7 +26,8 @@ def parse_amount(raw: str | None) -> float | None:
         is_negative = True
 
     # Strip currency symbols, parentheses, Cr/Dr suffixes, and whitespace.
-    cleaned = re.sub(r"(?i)\b(cr|dr)\b", "", text)
+    # The suffix may be attached ("1,950.71Cr", FNB) or spaced ("1 950.71 Cr").
+    cleaned = re.sub(r"(?i)\s*(cr|dr)\s*$", "", text)
     cleaned = cleaned.replace("R", "").replace("r", "")
     cleaned = cleaned.strip(" ()")
     cleaned = cleaned.replace(" ", "")

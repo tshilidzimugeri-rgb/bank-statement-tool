@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import re
 import sys
+from datetime import date
 from pathlib import Path
 
 import pdfplumber
@@ -158,15 +159,19 @@ def parse_statement(
     if (not raw_transactions or problems) and text_result and not text_result.likely_scanned:
         # No usable table, or the table's numbers don't check out: read the
         # transaction lines directly, and keep whichever reading checks out.
+        fmt = bank_layout.line_format
         line_result = line_extract.extract(
             text_result.full_text,
-            thousands=bank_layout.line_format.get("thousands", ","),
-            fee_column=bool(bank_layout.line_format.get("fee_column", False)),
+            thousands=fmt.get("thousands", ","),
+            fee_column=bool(fmt.get("fee_column", False)),
+            dates_without_year=bool(fmt.get("dates_without_year", False)),
+            trailing_charges_column=bool(fmt.get("trailing_charges_column", False)),
         )
-        line_rows = [
-            (parse_date(r.date_raw) or r.date_raw, r.description, r.debit, r.credit, r.balance)
-            for r in line_result.rows
-        ]
+        period_end = _period_end(extract_statement_period(full_text, bank_layout, generic))
+        line_rows = []
+        for r in line_result.rows:
+            date_raw = _with_year(r.date_raw, period_end) if fmt.get("dates_without_year") else r.date_raw
+            line_rows.append((parse_date(date_raw) or date_raw, r.description, r.debit, r.credit, r.balance))
         if line_rows:
             line_problems = _all_problems(line_rows, line_result.opening_balance, full_text, bank_layout, generic)
             if line_result.skipped_lines:
@@ -285,6 +290,28 @@ def parse_statement(
         warning="; ".join(warnings) if warnings else None,
         problems=problems,
     )
+
+
+def _period_end(period: str | None) -> date | None:
+    """Last date of a statement period like "8 August 2026 to 10 September 2026"."""
+    if not period:
+        return None
+    iso = parse_date(re.split(r"\s+to\s+", period, flags=re.IGNORECASE)[-1])
+    return date.fromisoformat(iso) if iso else None
+
+
+def _with_year(date_raw: str, period_end: date | None) -> str:
+    """Adds the year to a "11 Aug" date: the period's end year, or the year
+    before for dates after the end month-day (a period running Dec -> Jan).
+    Left as-is (and so reported as unreadable) if the period is unknown.
+    """
+    if period_end is None:
+        return date_raw
+    iso = parse_date(f"{date_raw} {period_end.year}")
+    if iso is None:
+        return date_raw
+    year = period_end.year - 1 if date.fromisoformat(iso) > period_end else period_end.year
+    return f"{date_raw} {year}"
 
 
 def _find_account_number(first_page_text: str, layout: BankLayout, generic: BankLayout) -> str | None:

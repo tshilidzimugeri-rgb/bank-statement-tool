@@ -24,6 +24,10 @@ from dataclasses import dataclass
 from .amounts import parse_amount
 
 _DATE = r"\d{1,2}\s+[A-Za-z]{3,9}\.?\s+\d{2,4}|\d{1,2}/\d{1,2}/\d{2,4}|\d{4}-\d{2}-\d{2}"
+# "11 Aug" - for layouts that print dates without a year. Alongside it only
+# all-numeric dates are accepted, never "11 Aug 20", so a description
+# starting with a number ("20 litres ...") can't be read as a year.
+_DATE_NO_YEAR = r"\d{1,2}/\d{1,2}/\d{2,4}|\d{4}-\d{2}-\d{2}|\d{1,2}\s+[A-Za-z]{3}(?![A-Za-z])"
 
 # A continuation line longer than this is treated as page furniture (legal
 # footer, disclaimer) rather than part of the transaction's description.
@@ -47,18 +51,25 @@ class _Patterns:
     opening: re.Pattern
 
 
-def _patterns(thousands: str, fee_column: bool) -> _Patterns:
+def _patterns(
+    thousands: str, fee_column: bool, dates_without_year: bool = False, trailing_charges_column: bool = False
+) -> _Patterns:
     amount = _amount_pattern(thousands)
+    date = _DATE_NO_YEAR if dates_without_year else _DATE
     # A trailing "*" marks a VAT-inclusive amount (Capitec); not part of the number.
     fee = rf"(?:\s+(?P<fee>{amount})\*?)?" if fee_column else ""
+    # FNB's "Accrued Bank Charges": charged later as a row of its own.
+    trailing = rf"(?:\s+{amount})?" if trailing_charges_column else ""
     return _Patterns(
         txn=re.compile(
-            rf"^(?P<date>{_DATE})\s+(?P<desc>.+?)\s+(?P<amount>{amount})\*?{fee}\s+(?P<balance>{amount})$"
+            # The description can be empty (FNB's bank-charges rows).
+            rf"^(?P<date>{date})\s+(?:(?P<desc>.+?)\s+)?(?P<amount>{amount})\*?{fee}"
+            rf"\s+(?P<balance>{amount}){trailing}$"
         ),
         # Starts with a date and has a bare amount on it (not an "R58.00"
         # summary figure) but didn't match txn - probably a transaction in a
         # shape we don't read; reported, never silently dropped.
-        looks_like_txn=re.compile(rf"^(?:{_DATE})\s.*(?<![\dRr.,]){amount}"),
+        looks_like_txn=re.compile(rf"^(?:{date})\s.*(?<![\dRr.,]){amount}"),
         opening=re.compile(rf"opening balance:?\s*-?R?\s?(?P<balance>{amount})", re.IGNORECASE),
     )
 
@@ -91,8 +102,14 @@ def _is_continuation(line: str, txn: re.Pattern) -> bool:
     )
 
 
-def extract(full_text: str, thousands: str = ",", fee_column: bool = False) -> LineExtractionResult:
-    p = _patterns(thousands, fee_column)
+def extract(
+    full_text: str,
+    thousands: str = ",",
+    fee_column: bool = False,
+    dates_without_year: bool = False,
+    trailing_charges_column: bool = False,
+) -> LineExtractionResult:
+    p = _patterns(thousands, fee_column, dates_without_year, trailing_charges_column)
     rows: list[LineRow] = []
     skipped: list[str] = []
     opening_balance: float | None = None
@@ -121,8 +138,10 @@ def extract(full_text: str, thousands: str = ",", fee_column: bool = False) -> L
         fee = parse_amount(m.groupdict().get("fee"))
         if amount is None:
             continue
+        if amount == 0 and fee is None:
+            continue  # notice rows like FNB's "Cr.int.rate ,00000 0.00" move no money
 
-        description = m.group("desc").strip()
+        description = (m.group("desc") or "").strip() or "(no description)"
         if i + 1 < len(lines) and _is_continuation(lines[i + 1], p.txn) and lines[i + 1] != description:
             description = f"{description} | {lines[i + 1]}"
 

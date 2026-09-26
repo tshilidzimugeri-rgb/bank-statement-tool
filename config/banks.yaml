@@ -32,8 +32,11 @@
 #
 # "line_format" (optional) - for the line-by-line reader used when a table
 #            can't be split into columns: "thousands" separator in amounts
-#            ("," by default, " " for "3 205.00"), and "fee_column: true" if
-#            rows can carry a separate fee amount before the balance.
+#            ("," by default, " " for "3 205.00"), "fee_column: true" if
+#            rows can carry a separate fee amount before the balance,
+#            "dates_without_year: true" for "11 Aug" dates (year taken from
+#            the statement period), and "trailing_charges_column: true" for
+#            an informational amount after the balance that isn't counted.
 #
 banks:
   fnb:
@@ -45,6 +48,19 @@ banks:
     period_patterns:
       - "statement period[:\\s]+([0-9A-Za-z /.\\-]+to[0-9A-Za-z /.\\-]+)"
       - "statement date[:\\s]+([0-9A-Za-z /.\\-]+)"
+    # "Easy Account : 62000000000"
+    account_patterns: ["account\\s*:\\s*(\\d{9,12})"]
+    # "No. Credit Transactions 12 3,456.78Cr" / "No. Debit Transactions 34 5,678.90Dr"
+    control_totals:
+      total_credits: ["no\\. credit transactions\\s+\\d+\\s+(\\d{1,3}(?:,\\d{3})*\\.\\d{2})"]
+      total_debits: ["no\\. debit transactions\\s+\\d+\\s+(\\d{1,3}(?:,\\d{3})*\\.\\d{2})"]
+    # Transaction rows: "11 Aug Payshap ... 700.00 1,950.71Cr 3.00" - no year
+    # on the date (taken from the statement period), credits marked Cr, and
+    # an "Accrued Bank Charges" column at the end that is charged later as
+    # its own row, so it isn't a transaction.
+    line_format:
+      dates_without_year: true
+      trailing_charges_column: true
     amount_style: split
     columns:
       date: ["date"]
