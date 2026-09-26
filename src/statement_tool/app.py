@@ -1,16 +1,33 @@
-"""Local upload page: drop in statement PDFs, get the workbook and reports.
+"""Upload page: drop in statement PDFs, get the workbook and reports.
+
+Runs on this computer (run_app.bat) or hosted online (Streamlit Community
+Cloud). Online it needs a password (APP_PASSWORD in the app's secrets), and
+keeps nothing between visits: each visit works in its own temporary folder,
+so you upload your latest workbook together with new statements and
+download it again when done.
 
 Run with run_app.bat, or:  .venv\\Scripts\\streamlit run src\\statement_tool\\app.py
 """
 from __future__ import annotations
 
 import dataclasses
+import hmac
+import os
+import sys
+import tempfile
 from collections import defaultdict
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-from statement_tool import config as config_mod
+# Hosted, this file is run straight from the repo without installing the
+# package, so make src/ importable.
+_SRC = Path(__file__).resolve().parents[1]
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+
+from statement_tool import config as config_mod  # noqa: E402
 from statement_tool.categorize import load_categories
 from statement_tool.checks import workbook_gaps
 from statement_tool.excel_writer import (
@@ -20,6 +37,7 @@ from statement_tool.excel_writer import (
     list_workbooks,
     read_transactions,
     report_categories,
+    restore_workbook,
     workbook_path_for,
 )
 from statement_tool.extract.parser import parse_statement
@@ -28,6 +46,47 @@ from statement_tool.store import ProcessedStore, sha256_of_bytes
 st.set_page_config(page_title="Bank Statement Tool", page_icon="📄", layout="wide")
 
 settings = config_mod.load_settings()
+
+# run_app.bat binds to localhost; anything else is treated as online.
+HOSTED = st.get_option("server.address") not in ("localhost", "127.0.0.1")
+
+
+def _app_password() -> str | None:
+    try:
+        if "APP_PASSWORD" in st.secrets:
+            return str(st.secrets["APP_PASSWORD"])
+    except Exception:  # no secrets file - normal when running locally
+        pass
+    return os.environ.get("APP_PASSWORD") or None
+
+
+expected_password = _app_password()
+if HOSTED and not expected_password:
+    st.error("This page is online but has no password set, so it won't open. "
+             "Add APP_PASSWORD in the app's Secrets settings.")
+    st.stop()
+if expected_password and not st.session_state.get("signed_in"):
+    st.title("Bank Statement Tool")
+    entered = st.text_input("Password", type="password")
+    if entered and hmac.compare_digest(entered.encode(), expected_password.encode()):
+        st.session_state["signed_in"] = True
+        st.rerun()
+    elif entered:
+        st.error("Wrong password.")
+    st.stop()
+
+if HOSTED:
+    # Each visit gets its own temporary folder: nothing is shared between
+    # visitors or kept on the server afterwards.
+    if "work_dir" not in st.session_state:
+        st.session_state["work_dir"] = tempfile.mkdtemp(prefix="statements-")
+    work_dir = Path(st.session_state["work_dir"])
+    settings = dataclasses.replace(
+        settings,
+        output_dir=work_dir / "output",
+        uploads_dir=work_dir / "uploads",
+        processed_db=work_dir / "processed.db",
+    )
 try:
     categories = load_categories(settings.categories_config)
     layouts, generic = config_mod.load_bank_layouts(settings.banks_config)
@@ -37,11 +96,20 @@ except Exception as exc:  # a typo in one of the YAML files
     st.stop()
 
 
+def restore_upload(name: str, data: bytes) -> None:
+    target = restore_workbook(data, settings.output_dir, name)
+    if target is None:
+        st.error(f"**{name}** isn't a workbook made by this tool, so it was not used.")
+        return
+    st.session_state["last_workbook"] = str(target)
+    st.info(f"Using your workbook **{target.stem}** ({len(read_transactions(target))} transactions).")
+
+
 def process_upload(name: str, data: bytes, password: str, reprocess: bool, accept_problems: bool) -> None:
     content_hash = sha256_of_bytes(data)
     source_id = f"upload:{content_hash}"
     with ProcessedStore(settings.processed_db) as store:
-        if store.is_processed(source_id, content_hash) and not reprocess:
+        if not HOSTED and store.is_processed(source_id, content_hash) and not reprocess:
             st.info(f"**{name}** was already added earlier - skipped.")
             return
 
@@ -96,16 +164,27 @@ def process_upload(name: str, data: bytes, password: str, reprocess: bool, accep
 
 
 st.title("Bank Statement Tool")
-st.caption(f"Workbooks (one per bank account): `{settings.output_dir}`")
+if HOSTED:
+    st.info("Online: nothing is kept after you leave. To add to an existing workbook, upload it too, "
+            "and download the updated workbook before closing the page.")
+else:
+    st.caption(f"Workbooks (one per bank account): `{settings.output_dir}`")
 
 with st.form("upload", clear_on_submit=True):
+    existing = (
+        st.file_uploader("Your latest workbook(s) from last time (optional)", type="xlsx",
+                         accept_multiple_files=True)
+        if HOSTED else []
+    )
     files = st.file_uploader("Bank statement PDFs", type="pdf", accept_multiple_files=True)
     password = st.text_input(
         "PDF password (only if the statements are locked)",
         type="password",
         help="Used for this upload only. To stop typing it, add it to STATEMENT_PDF_PASSWORDS in .env.",
     )
-    reprocess = st.checkbox("Process again even if already added (duplicates are still skipped)")
+    reprocess = False if HOSTED else st.checkbox(
+        "Process again even if already added (duplicates are still skipped)"
+    )
     accept_problems = st.checkbox(
         "Add even if checks fail",
         help="Only after comparing with the PDF yourself. Normally a statement whose transactions don't add "
@@ -114,7 +193,9 @@ with st.form("upload", clear_on_submit=True):
     submitted = st.form_submit_button("Add to workbook", type="primary")
 
 if submitted:
-    if not files:
+    for w in existing or []:
+        restore_upload(w.name, w.getvalue())
+    if not files and not existing:
         st.warning("Choose at least one PDF first.")
     for f in files or []:
         with st.spinner(f"Reading {f.name}..."):

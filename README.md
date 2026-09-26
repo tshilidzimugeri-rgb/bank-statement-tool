@@ -123,6 +123,29 @@ Useful flags:
 - `--no-interactive` - never prompt for client mapping (for scripted runs);
   unmatched statements are labeled `UNMAPPED_CLIENT` instead.
 
+## Running it online (Streamlit Community Cloud)
+
+The same page can be hosted so it opens from any phone or computer:
+
+1. Sign in at https://share.streamlit.io with the GitHub account that owns
+   this repo, and allow it access to the repo.
+2. **Create app** -> deploy from GitHub, then choose this
+   repo, branch `main`, main file `src/statement_tool/app.py`. Under
+   **Advanced settings**, pick Python 3.12 and paste into **Secrets**:
+   ```
+   APP_PASSWORD = "a long password of your choosing"
+   ```
+3. Deploy. Every push to `main` updates the app automatically.
+4. In the app's **Settings -> Sharing**, keep it private and invite only
+   the people who should use it.
+
+Online, the page won't open without `APP_PASSWORD`, and it keeps nothing
+between visits: each visit works in its own temporary folder, which is
+gone when you leave. To add statements to an existing workbook, upload
+that workbook along with the new PDFs, then **download the updated
+workbook** before closing the page. `packages.txt` installs the OCR tools
+there, so scanned statements work online too.
+
 ## Safety checks
 
 Every statement is checked before anything is written, using the figures

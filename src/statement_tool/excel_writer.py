@@ -194,6 +194,28 @@ def workbook_path_for(output_dir: Path, client: str | None, account: str | None,
     return output_dir / f"{_UNSAFE_FILENAME.sub('_', label).strip()}.xlsx"
 
 
+def restore_workbook(data: bytes, output_dir: Path, name: str) -> Path | None:
+    """Puts a workbook downloaded earlier back under its account's own name -
+    read from its rows, not the file name, since browsers rename repeat
+    downloads ("... (1).xlsx"). Returns None if it isn't one of ours.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    tmp = output_dir / f"~restore-{hashlib.sha256(data).hexdigest()[:12]}.xlsx"
+    tmp.write_bytes(data)
+    try:
+        rows = read_transactions(tmp)
+    except Exception:
+        rows = []
+    if not rows or "Account" not in rows[0]:
+        tmp.unlink(missing_ok=True)
+        return None
+    first = rows[0]
+    target = workbook_path_for(output_dir, first.get("Client"), str(first.get("Account") or ""),
+                               str(first.get("Source File") or name))
+    os.replace(tmp, target)
+    return target
+
+
 def list_workbooks(output_dir: Path) -> list[Path]:
     """Account workbooks in output_dir, most recently updated first."""
     if not output_dir.exists():
@@ -206,7 +228,13 @@ def read_transactions(workbook_path: Path) -> list[dict]:
     """The workbook's transaction rows as {header: value} (empty if none yet)."""
     if not workbook_path.exists():
         return []
-    return _read_existing_rows(_open_workbook(workbook_path, read_only=True))
+    wb = _open_workbook(workbook_path, read_only=True)
+    try:
+        return _read_existing_rows(wb)
+    finally:
+        # Read-only mode keeps the file open until closed; on Windows an open
+        # file can't be replaced, so a later save would fail.
+        wb.close()
 
 
 def _open_workbook(workbook_path: Path, read_only: bool = False) -> Workbook:

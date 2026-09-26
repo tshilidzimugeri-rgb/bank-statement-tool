@@ -241,3 +241,29 @@ def test_missing_account_number_is_a_problem(tmp_path):
     result = _parse(_statement_pdf(tmp_path / "s.pdf", GOOD_ROWS, account=False))
     assert any("no account number" in p for p in result.problems)
     assert not any("no account number" in p for p in _parse(_statement_pdf(tmp_path / "t.pdf", GOOD_ROWS)).problems)
+
+
+def test_downloaded_workbook_restored_under_its_account_name(tmp_path):
+    from statement_tool.excel_writer import restore_workbook
+
+    original = tmp_path / "made" / "FTW Properties (10237421516).xlsx"
+    t = _t("2026-03-01", "RENT", credit=100.0, balance=100.0)
+    t.client, t.account = "FTW Properties", "10237421516"
+    append_transactions(original, [t])
+
+    work = tmp_path / "online"
+    # Browsers rename a repeat download - the account comes from the rows.
+    restored = restore_workbook(original.read_bytes(), work, "FTW Properties (10237421516) (1).xlsx")
+    assert restored == work / "FTW Properties (10237421516).xlsx"
+    assert len(read_transactions(restored)) == 1
+    assert list(work.glob("~*")) == []
+
+    assert restore_workbook(b"not a workbook", work, "junk.xlsx") is None
+    assert list(work.glob("~*")) == []
+
+
+def test_reading_a_workbook_does_not_block_the_next_save(tmp_path):
+    book = tmp_path / "out.xlsx"
+    append_transactions(book, [_t("2026-03-01", "A", credit=1.0, balance=1.0)])
+    read_transactions(book)  # e.g. the page showing the overview
+    assert append_transactions(book, [_t("2026-03-02", "B", credit=1.0, balance=2.0)]).added == 1
