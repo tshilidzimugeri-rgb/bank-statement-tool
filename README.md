@@ -260,6 +260,14 @@ Flags: `--days N` (override the lookback window), `--reprocess`,
 
 ## Adding a new bank's layout
 
+Usually not needed: a statement from a bank without its own entry is read
+by trying every row shape the tool knows (Standard Bank, Capitec, FNB and
+plain layouts) and keeping the reading whose numbers match the statement's
+own balances and totals. With every bank's settings hidden, all the real
+statements tested so far read identically. A new entry helps when that
+fails, and adds the bank's printed totals as an extra check.
+
+
 Copy a block in `config/banks.yaml`, rename the key, and adjust:
 
 - `detect` - a few substrings unique to that bank's statement header/footer.

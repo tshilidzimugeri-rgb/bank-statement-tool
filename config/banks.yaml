@@ -164,7 +164,13 @@ banks:
 generic:
   display_name: "Unknown/Generic"
   # Tried for every bank after its own account_patterns.
-  account_patterns: ["account (?:number|no\\.?)[:\\s]*(\\d[\\d -]{5,}\\d)"]
+  # "Account number: 1234 567 890", "Account No. ...", "Easy Account : 62...",
+  # or "Account 1234567890" at the start of a line (8+ digits, so amounts
+  # after the word "account" aren't mistaken for it).
+  account_patterns:
+    - "account (?:number|no\\.?)[:\\s]*(\\d[\\d -]{5,}\\d)"
+    - "account\\s*:\\s*(\\d{8,})"
+    - "(?m)^account\\s+(\\d{8,})"
   period_patterns:
     - "statement period[:\\s]+([0-9A-Za-z /.\\-]+to[0-9A-Za-z /.\\-]+)"
     - "period[:\\s]+([0-9A-Za-z /.\\-]+to[0-9A-Za-z /.\\-]+)"

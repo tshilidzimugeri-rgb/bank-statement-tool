@@ -267,3 +267,35 @@ def test_reading_a_workbook_does_not_block_the_next_save(tmp_path):
     append_transactions(book, [_t("2026-03-01", "A", credit=1.0, balance=1.0)])
     read_transactions(book)  # e.g. the page showing the overview
     assert append_transactions(book, [_t("2026-03-02", "B", credit=1.0, balance=2.0)]).added == 1
+
+
+def test_statement_from_a_bank_with_no_settings_is_read_and_checked(tmp_path):
+    # A bank not in banks.yaml, printing FNB-style rows: no year on dates,
+    # attached Cr, an accrued-charges column and a no-description fee row.
+    from reportlab.pdfgen import canvas
+
+    lines = [
+        "Mystery Bank Limited",
+        "Account : 55512345678",
+        "Statement Period : 1 December 2026 to 5 January 2027",
+        "Opening Balance 1,000.00Cr",
+        "Date Description Amount Balance Accrued Charges",
+        "28 Dec Salary 5,000.00Cr 6,000.00Cr",
+        "30 Dec Card Purchase Spar 250.00 5,750.00Cr 3.00",
+        "03 Jan 3.00 5,747.00Cr",
+        "Closing Balance 5,747.00Cr",
+    ]
+    path = tmp_path / "mystery.pdf"
+    c = canvas.Canvas(str(path))
+    for i, line in enumerate(lines):
+        c.drawString(40, 800 - 18 * i, line)
+    c.save()
+
+    result = _parse(path)
+    assert result.problems == []
+    assert result.account_number == "55512345678"
+    assert [(t.date, t.debit, t.credit, t.balance) for t in result.transactions] == [
+        ("2026-12-28", None, 5000.0, 6000.0),  # December gets the year before the period's end
+        ("2026-12-30", 250.0, None, 5750.0),
+        ("2027-01-03", 3.0, None, 5747.0),
+    ]

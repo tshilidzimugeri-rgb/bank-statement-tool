@@ -159,29 +159,22 @@ def parse_statement(
     if (not raw_transactions or problems) and text_result and not text_result.likely_scanned:
         # No usable table, or the table's numbers don't check out: read the
         # transaction lines directly, and keep whichever reading checks out.
-        fmt = bank_layout.line_format
-        line_result = line_extract.extract(
-            text_result.full_text,
-            thousands=fmt.get("thousands", ","),
-            fee_column=bool(fmt.get("fee_column", False)),
-            dates_without_year=bool(fmt.get("dates_without_year", False)),
-            trailing_charges_column=bool(fmt.get("trailing_charges_column", False)),
-        )
-        period_end = _period_end(extract_statement_period(full_text, bank_layout, generic))
-        line_rows = []
-        for r in line_result.rows:
-            date_raw = _with_year(r.date_raw, period_end) if fmt.get("dates_without_year") else r.date_raw
-            line_rows.append((parse_date(date_raw) or date_raw, r.description, r.debit, r.credit, r.balance))
-        if line_rows:
-            line_problems = _all_problems(line_rows, line_result.opening_balance, full_text, bank_layout, generic)
-            if line_result.skipped_lines:
-                shown = "; ".join(line_result.skipped_lines[:3])
-                line_problems.append(
-                    f"{len(line_result.skipped_lines)} line(s) look like transactions but couldn't be read "
-                    f"(e.g. {shown})"
-                )
-            if not raw_transactions or not line_problems:
-                raw_transactions, problems = line_rows, line_problems
+        # The bank's own line format first, then every other known shape, so
+        # a bank without its own config (or a new layout from a known bank)
+        # is still read - but only a reading whose numbers check out wins.
+        period = extract_statement_period(full_text, bank_layout, generic)
+        best: tuple[list, list[str]] | None = None
+        for fmt in _line_formats_to_try(bank_layout):
+            line_rows, line_problems = _read_lines(text_result.full_text, fmt, period, full_text, bank_layout, generic)
+            if not line_rows:
+                continue
+            if not line_problems:
+                best = (line_rows, line_problems)
+                break
+            if best is None or len(line_problems) < len(best[1]):
+                best = (line_rows, line_problems)
+        if best and (not raw_transactions or not best[1]):
+            raw_transactions, problems = best
 
     if not raw_transactions:
         # Text extraction found no usable transactions - fall back to OCR.
@@ -290,6 +283,52 @@ def parse_statement(
         warning="; ".join(warnings) if warnings else None,
         problems=problems,
     )
+
+
+# Line shapes seen so far (Standard Bank, Capitec, FNB, plain), tried in turn
+# on any statement whose own layout doesn't read cleanly.
+LINE_FORMAT_VARIANTS = [
+    {},
+    {"thousands": " "},
+    {"thousands": " ", "fee_column": True},
+    {"fee_column": True},
+    {"dates_without_year": True, "trailing_charges_column": True},
+    {"dates_without_year": True},
+    {"trailing_charges_column": True},
+]
+
+
+def _line_formats_to_try(layout: BankLayout) -> list[dict]:
+    formats = [layout.line_format or {}]
+    for variant in LINE_FORMAT_VARIANTS:
+        if variant not in formats:
+            formats.append(variant)
+    return formats
+
+
+def _read_lines(text, fmt, period, full_text, layout, generic):
+    """One line-by-line reading of the statement and its problems."""
+    result = line_extract.extract(
+        text,
+        thousands=fmt.get("thousands", ","),
+        fee_column=bool(fmt.get("fee_column", False)),
+        dates_without_year=bool(fmt.get("dates_without_year", False)),
+        trailing_charges_column=bool(fmt.get("trailing_charges_column", False)),
+    )
+    period_end = _period_end(period)
+    rows = []
+    for r in result.rows:
+        date_raw = _with_year(r.date_raw, period_end) if fmt.get("dates_without_year") else r.date_raw
+        rows.append((parse_date(date_raw) or date_raw, r.description, r.debit, r.credit, r.balance))
+    if not rows:
+        return rows, []
+    problems = _all_problems(rows, result.opening_balance, full_text, layout, generic)
+    if result.skipped_lines:
+        shown = "; ".join(result.skipped_lines[:3])
+        problems.append(
+            f"{len(result.skipped_lines)} line(s) look like transactions but couldn't be read (e.g. {shown})"
+        )
+    return rows, problems
 
 
 def _period_end(period: str | None) -> date | None:

@@ -99,7 +99,11 @@ except Exception as exc:  # a typo in one of the YAML files
 def restore_upload(name: str, data: bytes) -> None:
     target = restore_workbook(data, settings.output_dir, name)
     if target is None:
-        st.error(f"**{name}** isn't a workbook made by this tool, so it was not used.")
+        st.error(
+            f"**{name}** isn't a workbook downloaded from this page, so it was not used. "
+            "The top box is only for continuing a workbook from last time; bank statements go in the "
+            "**Bank statement PDFs** box."
+        )
         return
     st.session_state["last_workbook"] = str(target)
     st.info(f"Using your workbook **{target.stem}** ({len(read_transactions(target))} transactions).")
@@ -172,8 +176,12 @@ else:
 
 with st.form("upload", clear_on_submit=True):
     existing = (
-        st.file_uploader("Your latest workbook(s) from last time (optional)", type="xlsx",
-                         accept_multiple_files=True)
+        st.file_uploader(
+            "Workbook you downloaded from this page last time (optional)",
+            type="xlsx",
+            accept_multiple_files=True,
+            help="Only a workbook this page made. Bank statements go in the box below.",
+        )
         if HOSTED else []
     )
     files = st.file_uploader("Bank statement PDFs", type="pdf", accept_multiple_files=True)
