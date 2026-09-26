@@ -1,105 +1,125 @@
-"""OCR fallback for scanned / image-only bank statement PDFs.
+"""OCR for scanned / image-only statement PDFs.
 
-This is deliberately best-effort: OCR loses the column boundaries that the
-text-based extractor relies on, so we fall back to a per-line heuristic
-(leading date, trailing amount(s), last amount on the line = balance) rather
-than a real table structure. Every statement that goes through this path is
-flagged (StatementResult.used_ocr) so it always surfaces in the run summary
-for a manual spot-check - the numbers should be treated as provisional.
+Each page is rendered (PyMuPDF), turned the right way up (scanners often
+feed pages upside down - Tesseract's orientation detection says by how
+much), and read with Tesseract. The text then goes through the same line
+reader and balance/total checks as a digital statement, so a misread digit
+shows up as a statement that doesn't add up, never as a wrong number.
 """
 from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+import shutil
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import pymupdf
 import pytesseract
-from pdf2image import convert_from_path
+from PIL import Image
 
-from .amounts import parse_amount
-from .dates import parse_date
-
-_DATE_TOKEN = re.compile(
-    r"^\s*(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}|\d{1,2}\s+[A-Za-z]{3,9}\.?\s+\d{2,4})\s*"
-)
-_AMOUNT_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9])(?:R\s?)?-?\(?\d{1,3}(?:[ ,]\d{3})*(?:[.,]\d{2})\)?\s?(?:Cr|Dr)?(?![A-Za-z0-9])",
-    re.IGNORECASE,
-)
+RENDER_DPI = 300
+# Second, sharper reading for statements whose first reading doesn't check
+# out - slower, but it recovers digits the first one lost.
+RETRY_DPI = 400
+# --psm 6: one uniform block, so each statement row stays on one line;
+# preserve_interword_spaces keeps the gaps between columns.
+TESSERACT_CONFIG = "--psm 6 -c preserve_interword_spaces=1"
+_WINDOWS_DEFAULT = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
 
 
-@dataclass
-class OcrRow:
-    date_raw: str
-    description: str
-    amount: float | None
-    is_credit_guess: bool | None
-    balance: float | None
+class OcrUnavailableError(Exception):
+    pass
 
 
-@dataclass
-class OcrExtractionResult:
-    full_text: str
-    rows: list[OcrRow]
-
-
-def _render_and_ocr(pdf_path: Path, poppler_path: str | None, password: str | None) -> str:
-    kwargs = {}
-    if poppler_path:
-        kwargs["poppler_path"] = poppler_path
-    if password:
-        kwargs["userpw"] = password
-    images = convert_from_path(str(pdf_path), dpi=300, **kwargs)
-    texts = []
-    for image in images:
-        texts.append(pytesseract.image_to_string(image))
-    return "\n".join(texts)
-
-
-def extract(
-    pdf_path: Path, *, tesseract_cmd: str | None, poppler_path: str | None, password: str | None = None
-) -> OcrExtractionResult:
-    if tesseract_cmd:
-        pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
-    elif "TESSERACT_CMD" in os.environ:
-        pytesseract.pytesseract.tesseract_cmd = os.environ["TESSERACT_CMD"]
-
-    full_text = _render_and_ocr(pdf_path, poppler_path, password)
-
-    rows: list[OcrRow] = []
-    for line in full_text.splitlines():
-        date_match = _DATE_TOKEN.match(line)
-        if not date_match:
-            continue
-        date_raw = date_match.group(1)
-        if parse_date(date_raw) is None:
-            continue
-
-        remainder = line[date_match.end():]
-        amount_matches = list(_AMOUNT_TOKEN.finditer(remainder))
-        if not amount_matches:
-            continue
-
-        description = remainder[: amount_matches[0].start()].strip(" -|:\t")
-
-        balance = parse_amount(amount_matches[-1].group())
-        amount = None
-        is_credit_guess = None
-        if len(amount_matches) >= 2:
-            amount_text = amount_matches[-2].group()
-            amount = parse_amount(amount_text)
-            if amount is not None:
-                is_credit_guess = "dr" not in amount_text.lower() and amount >= 0
-
-        rows.append(
-            OcrRow(
-                date_raw=date_raw,
-                description=description or "(description not confidently read)",
-                amount=amount,
-                is_credit_guess=is_credit_guess,
-                balance=balance,
-            )
+def _configure_tesseract(tesseract_cmd: str | None) -> None:
+    cmd = tesseract_cmd or os.environ.get("TESSERACT_CMD") or shutil.which("tesseract")
+    if not cmd and _WINDOWS_DEFAULT.exists():
+        cmd = str(_WINDOWS_DEFAULT)
+    if not cmd:
+        raise OcrUnavailableError(
+            "this looks like a scanned statement, and reading scans needs Tesseract OCR, which isn't installed "
+            "(Windows: winget install UB-Mannheim.TesseractOCR)"
         )
+    pytesseract.pytesseract.tesseract_cmd = cmd
 
-    return OcrExtractionResult(full_text=full_text, rows=rows)
+
+def _upright(image: Image.Image) -> Image.Image:
+    try:
+        osd = pytesseract.image_to_osd(image)
+    except pytesseract.TesseractError:
+        return image  # too little text to tell; read as-is
+    match = re.search(r"Rotate: (\d+)", osd)
+    rotate = int(match.group(1)) if match else 0
+    return image.rotate(-rotate, expand=True) if rotate else image
+
+
+def _ocr_page(image: Image.Image) -> str:
+    return pytesseract.image_to_string(_upright(image), config=TESSERACT_CONFIG)
+
+
+def ocr_pages(
+    pdf_path: Path,
+    *,
+    password: str | None = None,
+    tesseract_cmd: str | None = None,
+    page_numbers: list[int] | None = None,
+    dpi: int = RENDER_DPI,
+) -> list[str]:
+    """Text of each page (or of page_numbers, 0-based), in that order."""
+    _configure_tesseract(tesseract_cmd)
+    # Tesseract runs as a separate process per page, so a few pages run in
+    # parallel - rendered a batch at a time, since a page image at 300 dpi
+    # is ~9 MB and a long scan held all at once runs out of memory.
+    workers = max(1, min(2, os.cpu_count() or 1))
+    texts: list[str] = []
+    doc = pymupdf.open(pdf_path)
+    try:
+        if doc.needs_pass and not doc.authenticate(password or ""):
+            raise OcrUnavailableError("the PDF password didn't open it for OCR")
+        wanted = list(range(doc.page_count)) if page_numbers is None else page_numbers
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for start in range(0, len(wanted), workers):
+                batch = []
+                for number in wanted[start:start + workers]:
+                    pix = doc[number].get_pixmap(dpi=dpi, colorspace=pymupdf.csGRAY)
+                    batch.append(Image.frombytes("L", (pix.width, pix.height), pix.samples))
+                texts.extend(clean_ocr_text(t) for t in pool.map(_ocr_page, batch))
+    finally:
+        doc.close()
+    return texts
+
+
+_TABLE_LINES = re.compile(r"[|\[\]{}]")
+# "1,472.60Cr)" / "129.74 Cr]" - junk straight after a Cr/Dr marker.
+_MARKER_JUNK = re.compile(r"(\d\.\d{2})\s?(Cr|Dr)[)\]}|!:;,.]+")
+# "600,00" - a decimal comma misread (or printed) where a point belongs; a
+# thousands group always has three digits, so "10,000" is left alone.
+_DECIMAL_COMMA = re.compile(r"(?<![\d,])(\d{1,3}(?:,\d{3})*),(\d{2})(?![\d,])")
+
+
+# "15.00)" - a closing bracket read off a table rule after an amount.
+_AMOUNT_BRACKET = re.compile(r"(?<![(\d])(\d[\d,]*\.\d{2}(?:Cr|Dr)?)\)")
+# Quote marks read after an amount: "2,299.24Cr'".
+_AMOUNT_QUOTES = re.compile(r'(\d\.\d{2}(?:Cr|Dr)?)[\'`"\u2018\u2019]+')
+# Junk before a row's date at the start of a line: "(02 Mar ...".
+_LEADING_JUNK = re.compile(r"(?m)^[^\w\s]{1,3}\s?(?=\d{1,2} [A-Z][a-z]{2}\b)")
+# Stray marks standing alone between columns: "361.79Cr * 8.00".
+_LONE_MARKS = re.compile(r"(?<=\s)[^\w\s#():-]{1,3}(?=\s|$)")
+
+
+def clean_ocr_text(text: str) -> str:
+    """Removes what scanning adds: table rules read as | [ ] { }, stray marks
+    between columns, and junk or decimal commas around amounts. Amounts
+    themselves are never guessed at - anything still misread is caught by the
+    balance checks.
+    """
+    text = text.replace("\ufffd", " ")
+    text = _MARKER_JUNK.sub(r"\1\2", text)
+    text = _TABLE_LINES.sub(" ", text)
+    text = _DECIMAL_COMMA.sub(r"\1.\2", text)
+    text = _AMOUNT_BRACKET.sub(r"\1", text)
+    text = _AMOUNT_QUOTES.sub(r"\1", text)
+    text = _LEADING_JUNK.sub("", text)
+    text = _LONE_MARKS.sub(" ", text)
+    return "\n".join(re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines())

@@ -29,6 +29,8 @@ _DATE = r"\d{1,2}\s+[A-Za-z]{3,9}\.?\s+\d{2,4}|\d{1,2}/\d{1,2}/\d{2,4}|\d{4}-\d{
 # starting with a number ("20 litres ...") can't be read as a year.
 _DATE_NO_YEAR = r"\d{1,2}/\d{1,2}/\d{2,4}|\d{4}-\d{2}-\d{2}|\d{1,2}\s+[A-Za-z]{3}(?![A-Za-z])"
 
+_STARTS_WITH_DATE = re.compile(r"^\d{1,2}(?:\s+[A-Za-z]{3}|/\d{1,2})")
+
 # A continuation line longer than this is treated as page furniture (legal
 # footer, disclaimer) rather than part of the transaction's description.
 MAX_CONTINUATION_CHARS = 60
@@ -93,12 +95,22 @@ class LineExtractionResult:
     unreconciled: int
 
 
+def _signed(token: str | None, unmarked_is_debit: bool) -> float | None:
+    value = parse_amount(token)
+    if value is None or not unmarked_is_debit:
+        return value
+    return abs(value) if token.rstrip().lower().endswith("cr") else -abs(value)
+
+
 def _is_continuation(line: str, txn: re.Pattern) -> bool:
     return (
         0 < len(line) <= MAX_CONTINUATION_CHARS
         and not txn.match(line)
         and "balance" not in line.lower()
         and not line.startswith("*")  # "* Includes VAT at 15%" footnotes
+        # A line starting like a date is a row that didn't read cleanly -
+        # it's reported as skipped, not glued onto the row above.
+        and not _STARTS_WITH_DATE.match(line)
     )
 
 
@@ -108,7 +120,11 @@ def extract(
     fee_column: bool = False,
     dates_without_year: bool = False,
     trailing_charges_column: bool = False,
+    unmarked_is_debit: bool = False,
 ) -> LineExtractionResult:
+    """unmarked_is_debit: FNB's convention - credits carry "Cr", and an amount
+    or balance without it is a debit / overdrawn, so it's read as negative.
+    """
     p = _patterns(thousands, fee_column, dates_without_year, trailing_charges_column)
     rows: list[LineRow] = []
     skipped: list[str] = []
@@ -133,8 +149,8 @@ def extract(
                 skipped.append(line)
             continue
 
-        amount = parse_amount(m.group("amount"))
-        balance = parse_amount(m.group("balance"))
+        amount = _signed(m.group("amount"), unmarked_is_debit)
+        balance = _signed(m.group("balance"), unmarked_is_debit)
         fee = parse_amount(m.groupdict().get("fee"))
         if amount is None:
             continue

@@ -15,7 +15,7 @@ from pathlib import Path
 from . import config as config_mod
 from .categorize import load_categories
 from .excel_writer import MixedAccountsError, WorkbookLockedError, append_transactions, workbook_path_for
-from .extract.parser import parse_statement
+from .extract.document import parse_document
 from .models import StatementResult
 from .store import ProcessedStore, sha256_of_bytes, sha256_of_file
 
@@ -72,7 +72,7 @@ def _process_one_pdf(
     subject: str | None = None,
 ) -> None:
     print(f"Processing {pdf_path.name} ...")
-    result = parse_statement(
+    results = parse_document(
         pdf_path,
         layouts=layouts,
         generic=generic,
@@ -81,11 +81,22 @@ def _process_one_pdf(
         sender=sender,
         subject=subject,
         interactive=interactive,
+        progress=lambda message: print(f"  {message}"),
     )
+    added = [_add_statement(r, settings=settings, stats=stats, allow_problems=allow_problems) for r in results]
+    # Recorded as done only when every statement in it went in, so a rerun
+    # retries the rest (the ones already added are skipped as duplicates).
+    if all(added):
+        store.mark_processed(
+            source_id, content_hash, pdf_path.name, results[0].client, results[0].bank_display_name,
+            sum(len(r.transactions) for r in results),
+        )
 
+
+def _add_statement(result: StatementResult, *, settings, stats: RunStats, allow_problems: bool) -> bool:
     if not result.ok:
         stats.problems.append(result)
-        return
+        return False
 
     if result.problems and not allow_problems:
         result.error = (
@@ -93,7 +104,7 @@ def _process_one_pdf(
             + " (compare with the PDF; rerun with --allow-problems to add it anyway)"
         )
         stats.problems.append(result)
-        return
+        return False
 
     workbook = workbook_path_for(settings.output_dir, result.client, result.account_number, result.source_file)
     try:
@@ -101,16 +112,13 @@ def _process_one_pdf(
     except (WorkbookLockedError, MixedAccountsError) as exc:
         result.error = str(exc)
         stats.problems.append(result)
-        return
+        return False
     stats.transactions_added += write_result.added
     stats.processed += 1
     stats.workbooks.add(workbook)
-    store.mark_processed(
-        source_id, content_hash, pdf_path.name, result.client, result.bank_display_name,
-        len(result.transactions),
-    )
     if result.used_ocr or result.warning:
         stats.reviews.append(result)
+    return True
 
 
 def cmd_process_folder(args: argparse.Namespace) -> int:

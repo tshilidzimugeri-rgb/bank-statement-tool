@@ -40,7 +40,7 @@ from statement_tool.excel_writer import (
     restore_workbook,
     workbook_path_for,
 )
-from statement_tool.extract.parser import parse_statement
+from statement_tool.extract.document import parse_document
 from statement_tool.store import ProcessedStore, sha256_of_bytes
 
 st.set_page_config(page_title="Bank Statement Tool", page_icon="📄", layout="wide")
@@ -124,37 +124,50 @@ def process_upload(name: str, data: bytes, password: str, reprocess: bool, accep
         run_settings = dataclasses.replace(
             settings, pdf_passwords=[p for p in [password, *settings.pdf_passwords] if p]
         )
-        result = parse_statement(
+        status = st.empty()
+        results = parse_document(
             pdf_path,
             layouts=layouts,
             generic=generic,
             client_rules=client_rules,
             settings=run_settings,
             interactive=False,
+            progress=lambda message: status.info(f"**{name}**: {message}"),
         )
-        if not result.ok:
-            st.error(f"**{name}** could not be read: {result.error}")
-            return
+        status.empty()
+        if len(results) > 1:
+            st.write(f"**{name}** holds {len(results)} statements - each is checked on its own:")
+        added = [add_statement(r, accept_problems) for r in results]
+        if all(added):
+            store.mark_processed(source_id, content_hash, name, results[0].client, results[0].bank_display_name,
+                                 sum(len(r.transactions) for r in results))
+        elif any(added):
+            st.warning(f"**{name}**: {sum(added)} of {len(results)} statements added; the others were not "
+                       "(see above). Their months will show as gaps until they're added.")
 
-        if result.problems and not accept_problems:
-            st.error(
-                f"**{name}** was NOT added - its numbers don't check out:\n\n"
-                + "\n".join(f"- {p}" for p in result.problems)
-                + "\n\nNothing was written. Compare with the PDF; if the PDF itself is right and you still "
-                "want it in, tick **Add even if checks fail** and upload it again."
-            )
-            return
 
-        workbook = workbook_path_for(settings.output_dir, result.client, result.account_number, result.source_file)
-        try:
-            written = append_transactions(workbook, result.transactions, categories)
-        except (WorkbookLockedError, MixedAccountsError) as exc:
-            st.error(str(exc))
-            return
-        st.session_state["last_workbook"] = str(workbook)
-        store.mark_processed(
-            source_id, content_hash, name, result.client, result.bank_display_name, len(result.transactions)
+def add_statement(result, accept_problems: bool) -> bool:
+    """Checks one statement and writes it to its account's workbook. True if added."""
+    name = result.source_file
+    if not result.ok:
+        st.error(f"**{name}** could not be read: {result.error}")
+        return False
+    if result.problems and not accept_problems:
+        st.error(
+            f"**{name}** ({result.statement_period}) was NOT added - its numbers don't check out:\n\n"
+            + "\n".join(f"- {p}" for p in result.problems)
+            + "\n\nNothing was written. Compare with the PDF; if the PDF itself is right and you still "
+            "want it in, tick **Add even if checks fail** and upload it again."
         )
+        return False
+
+    workbook = workbook_path_for(settings.output_dir, result.client, result.account_number, result.source_file)
+    try:
+        written = append_transactions(workbook, result.transactions, categories)
+    except (WorkbookLockedError, MixedAccountsError) as exc:
+        st.error(str(exc))
+        return False
+    st.session_state["last_workbook"] = str(workbook)
 
     dupes = f", {written.skipped_duplicates} already in the workbook" if written.skipped_duplicates else ""
     st.success(
@@ -165,6 +178,7 @@ def process_upload(name: str, data: bytes, password: str, reprocess: bool, accep
     )
     if result.warning:
         st.warning(f"Check {name}: {result.warning}")
+    return True
 
 
 st.title("Bank Statement Tool")

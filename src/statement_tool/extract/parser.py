@@ -1,5 +1,6 @@
-"""Orchestrates bank detection, text/OCR extraction and normalisation into
-the common Transaction schema for a single PDF.
+"""Reads one digital (text-based) statement: bank detection, table and
+line extraction, and the checks. Scanned and multi-statement PDFs go through
+document.parse_document, which uses this for the single-statement case.
 """
 from __future__ import annotations
 
@@ -14,7 +15,7 @@ from pdfminer.pdfdocument import PDFPasswordIncorrect
 from ..config import BankLayout, ClientRule, Settings
 from ..checks import TOLERANCE, balance_breaks
 from ..models import StatementResult, Transaction
-from . import line_extract, ocr_extract, text_extract
+from . import line_extract, text_extract
 from .amounts import parse_amount
 from .bank_detect import detect_bank, extract_statement_period, match_client
 from .dates import parse_date
@@ -119,7 +120,6 @@ def parse_statement(
         text_extract_error = None
 
     used_ocr = False
-    ocr_error: str | None = None
     full_text = text_result.full_text if text_result else first_page_text
     warnings: list[str] = []
 
@@ -176,40 +176,6 @@ def parse_statement(
         if best and (not raw_transactions or not best[1]):
             raw_transactions, problems = best
 
-    if not raw_transactions:
-        # Text extraction found no usable transactions - fall back to OCR.
-        used_ocr = True
-        try:
-            ocr_result = ocr_extract.extract(
-                pdf_path,
-                tesseract_cmd=settings.tesseract_cmd,
-                poppler_path=settings.poppler_path,
-                password=password,
-            )
-        except Exception as exc:
-            ocr_error = str(exc)
-            ocr_result = None
-
-        if ocr_result:
-            full_text = ocr_result.full_text
-            for row in ocr_result.rows:
-                debit = credit = None
-                if row.amount is not None:
-                    if row.is_credit_guess:
-                        credit = row.amount if row.amount >= 0 else abs(row.amount)
-                    else:
-                        debit = abs(row.amount)
-                date_iso = parse_date(row.date_raw) or row.date_raw
-                raw_transactions.append((date_iso, row.description, debit, credit, row.balance))
-            if raw_transactions:
-                warnings.append(
-                    "Extracted via OCR - column alignment is approximate; "
-                    "please spot-check debit/credit amounts against the PDF"
-                )
-
-    if used_ocr and raw_transactions:
-        problems = _all_problems(raw_transactions, None, full_text, bank_layout, generic)
-
     statement_period = extract_statement_period(full_text, bank_layout, generic) or "Unknown"
     client, client_unmapped = _resolve_client(
         client_rules,
@@ -234,12 +200,9 @@ def parse_statement(
         error_bits = []
         if text_extract_error:
             error_bits.append(f"text extraction error: {text_extract_error}")
-        if ocr_error:
-            error_bits.append(f"OCR error: {ocr_error}")
         if not error_bits:
             error_bits.append(
-                "no transaction rows recognized via text extraction or OCR - "
-                "this bank's layout may need a new entry in config/banks.yaml"
+                "no transaction rows recognized - this bank's layout may need a new entry in config/banks.yaml"
             )
         return StatementResult(
             source_file=filename,
@@ -292,6 +255,7 @@ LINE_FORMAT_VARIANTS = [
     {"thousands": " "},
     {"thousands": " ", "fee_column": True},
     {"fee_column": True},
+    {"dates_without_year": True, "trailing_charges_column": True, "unmarked_is_debit": True},
     {"dates_without_year": True, "trailing_charges_column": True},
     {"dates_without_year": True},
     {"trailing_charges_column": True},
@@ -314,6 +278,7 @@ def _read_lines(text, fmt, period, full_text, layout, generic):
         fee_column=bool(fmt.get("fee_column", False)),
         dates_without_year=bool(fmt.get("dates_without_year", False)),
         trailing_charges_column=bool(fmt.get("trailing_charges_column", False)),
+        unmarked_is_debit=bool(fmt.get("unmarked_is_debit", False)),
     )
     period_end = _period_end(period)
     rows = []

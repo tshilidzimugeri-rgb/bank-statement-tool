@@ -1,7 +1,7 @@
 pdfplumber
 openpyxl
 pytesseract
-pdf2image
+pymupdf
 pyyaml
 python-dotenv
 google-api-python-client

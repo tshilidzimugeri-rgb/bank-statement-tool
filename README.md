@@ -41,21 +41,28 @@ python -m venv .venv
 copy .env.example .env
 ```
 
-### OCR fallback (scanned statements) - optional but recommended
+### Scanned statements (OCR)
 
-The primary path (`pdfplumber`) handles digitally-generated PDFs, which is
-most bank statements. If a statement turns out to be a scan/image, the tool
-falls back to OCR, which needs two external programs on PATH (or pointed to
-via `.env`):
+Scanned (photo / image-only) statements are read with **Tesseract OCR**:
 
-1. **Tesseract OCR** - https://github.com/UB-Mannheim/tesseract/wiki (Windows installer)
-2. **Poppler for Windows** - https://github.com/oschwartz10612/poppler-windows/releases
+- **Windows:** `winget install UB-Mannheim.TesseractOCR` (found automatically
+  in its default folder; otherwise set `TESSERACT_CMD` in `.env`).
+- **Online (Streamlit Cloud):** installed automatically from `packages.txt`.
 
-After installing, either add both `...\tesseract.exe` and
-`...\poppler\Library\bin` to your PATH, or set `TESSERACT_CMD` and
-`POPPLER_PATH` in `.env`. Without these, statements that need OCR will be
-reported as failures in the run summary (not silently dropped) rather than
-crashing the run.
+Each page is turned the right way up (scanners often feed pages upside
+down), read, and cleaned of what scanning adds (table lines read as `|`,
+stray marks, decimal commas). A PDF holding several statements - e.g. a year
+of monthly statements scanned together - is split per statement, and each
+is checked on its own against its opening/closing balance and printed
+totals.
+
+OCR misreads the odd digit. A single misread figure on a row can be
+corrected from the running balance, but the correction is only kept when
+the whole statement then matches the bank's printed totals and closing
+balance exactly - a wrong correction can't do that. Everything corrected
+is listed in the upload message. A statement that still doesn't add up is
+refused, like any other; better scans (straight, 300 dpi, not faded) read
+best.
 
 ## Configuration
 
@@ -318,7 +325,8 @@ src/statement_tool/
     column_map.py              # header row -> logical column mapping
     text_extract.py             # pdfplumber-based table extraction (primary)
     line_extract.py              # line-by-line fallback when table columns can't be split
-    ocr_extract.py                # pytesseract fallback for scanned PDFs
+    ocr_extract.py                # OCR for scanned PDFs (upright pages, clean-up)
+    document.py                    # splits a PDF into statements; verified OCR repairs
     amounts.py, dates.py           # shared value parsing
     parser.py                       # orchestrates the above per PDF
 data/incoming_pdfs/       # drop PDFs here for phase 1

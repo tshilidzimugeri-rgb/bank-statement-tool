@@ -47,7 +47,6 @@ class Settings:
     gmail_token_file: Path
     gmail_lookback_days: int
     tesseract_cmd: str | None
-    poppler_path: str | None
     pdf_passwords: list[str] = field(default_factory=list)
 
 
@@ -72,7 +71,6 @@ def load_settings(dotenv_path: Path | None = None) -> Settings:
         gmail_token_file=_path("GMAIL_TOKEN_FILE", "token.json"),
         gmail_lookback_days=int(os.environ.get("GMAIL_LOOKBACK_DAYS", "30")),
         tesseract_cmd=os.environ.get("TESSERACT_CMD"),
-        poppler_path=os.environ.get("POPPLER_PATH"),
         pdf_passwords=[
             pw.strip() for pw in os.environ.get("STATEMENT_PDF_PASSWORDS", "").split(",") if pw.strip()
         ],
