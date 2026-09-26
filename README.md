@@ -4,6 +4,9 @@ Turns bank statement PDFs into an Excel workbook of transactions plus
 financial reports (monthly summary, income statement, cash flow, category
 breakdown). Built incrementally:
 
+**Live app:** https://bank-statement-tool-za.streamlit.app/ (password
+protected - see "Running it online" below)
+
 - **Phase 1 (done):** folder of PDFs -> combined `.xlsx`.
 - **Phase 2 (done):** Gmail search/download layered on top of the same
   parser, using the Gmail API with OAuth (optional - uploading is the main
