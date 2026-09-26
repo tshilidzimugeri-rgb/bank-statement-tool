@@ -41,7 +41,7 @@ TABLE_SETTINGS_CANDIDATES = [
 ]
 
 
-def extract(pdf_path: Path, layout: BankLayout) -> TextExtractionResult:
+def extract(pdf_path: Path, layout: BankLayout, password: str | None = None) -> TextExtractionResult:
     rows: list[RawRow] = []
     tables_found = 0
     first_page_text = ""
@@ -52,7 +52,7 @@ def extract(pdf_path: Path, layout: BankLayout) -> TextExtractionResult:
     active_mapping: dict[str, int] | None = None
     active_column_count: int | None = None
 
-    with pdfplumber.open(pdf_path) as pdf:
+    with pdfplumber.open(pdf_path, password=password or "") as pdf:
         total_pages = len(pdf.pages)
         for page_index, page in enumerate(pdf.pages):
             page_text = page.extract_text() or ""

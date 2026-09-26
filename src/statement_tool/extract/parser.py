@@ -3,21 +3,49 @@ the common Transaction schema for a single PDF.
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
 import pdfplumber
+from pdfminer.pdfdocument import PDFPasswordIncorrect
 
 from ..config import BankLayout, ClientRule, Settings
+from ..checks import TOLERANCE, balance_breaks
 from ..models import StatementResult, Transaction
-from . import ocr_extract, text_extract
+from . import line_extract, ocr_extract, text_extract
 from .amounts import parse_amount
 from .bank_detect import detect_bank, extract_statement_period, match_client
 from .dates import parse_date
 
 
-def _quick_first_page_text(pdf_path: Path) -> str:
-    with pdfplumber.open(pdf_path) as pdf:
+class PdfPasswordError(Exception):
+    pass
+
+
+def _is_password_error(exc: BaseException) -> bool:
+    return isinstance(exc, PDFPasswordIncorrect) or any(isinstance(a, PDFPasswordIncorrect) for a in exc.args)
+
+
+def _find_password(pdf_path: Path, passwords: list[str]) -> str | None:
+    """Returns None for an unencrypted PDF, else the first configured
+    password that opens it; raises PdfPasswordError if none do.
+    """
+    for password in [None, *passwords]:
+        try:
+            with pdfplumber.open(pdf_path, password=password or ""):
+                return password
+        except Exception as exc:
+            if not _is_password_error(exc):
+                raise
+    tried = f"none of the {len(passwords)} password(s)" if passwords else "no passwords are"
+    raise PdfPasswordError(
+        f"PDF is password-protected and {tried} in STATEMENT_PDF_PASSWORDS (.env) opened it"
+    )
+
+
+def _quick_first_page_text(pdf_path: Path, password: str | None) -> str:
+    with pdfplumber.open(pdf_path, password=password or "") as pdf:
         if not pdf.pages:
             return ""
         return pdf.pages[0].extract_text() or ""
@@ -69,14 +97,20 @@ def parse_statement(
 ) -> StatementResult:
     filename = pdf_path.name
     try:
-        first_page_text = _quick_first_page_text(pdf_path)
+        password = _find_password(pdf_path, settings.pdf_passwords)
+        first_page_text = _quick_first_page_text(pdf_path, password)
+    except PdfPasswordError as exc:
+        return StatementResult(source_file=filename, ok=False, transactions=[], error=str(exc))
     except Exception as exc:  # corrupt / unreadable PDF
-        return StatementResult(source_file=filename, ok=False, transactions=[], error=f"Could not open PDF: {exc}")
+        return StatementResult(
+            source_file=filename, ok=False, transactions=[], error=f"Could not open PDF: {exc!r}"
+        )
 
     bank_layout = detect_bank(first_page_text, layouts, generic)
+    account_number = _find_account_number(first_page_text, bank_layout, generic)
 
     try:
-        text_result = text_extract.extract(pdf_path, bank_layout)
+        text_result = text_extract.extract(pdf_path, bank_layout, password)
     except Exception as exc:
         text_result = None
         text_extract_error = str(exc)
@@ -92,7 +126,6 @@ def parse_statement(
     # (date_raw, description, debit, credit, balance)
 
     if text_result and text_result.rows:
-        unparsed_dates = 0
         for row in text_result.rows:
             debit = credit = None
             if bank_layout.amount_style == "signed":
@@ -108,24 +141,52 @@ def parse_statement(
                 credit = parse_amount(row.cells.get("credit"))
                 if debit is None and credit is None:
                     continue
+                # The column says which way the money moved; some banks also
+                # print debits as negative numbers, which mustn't flip it back.
+                debit = abs(debit) if debit is not None else None
+                credit = abs(credit) if credit is not None else None
 
             balance = parse_amount(row.cells.get("balance")) if "balance" in row.cells else None
             date_raw = row.cells.get("date", "")
             date_iso = parse_date(date_raw)
-            if date_iso is None:
-                unparsed_dates += 1
             description = (row.cells.get("description") or "").strip() or "(no description)"
             raw_transactions.append((date_iso or date_raw, description, debit, credit, balance))
 
-        if unparsed_dates:
-            warnings.append(f"{unparsed_dates} row(s) had a date that could not be normalized to YYYY-MM-DD")
+    problems: list[str] = []
+    if raw_transactions:
+        problems = _all_problems(raw_transactions, None, full_text, bank_layout, generic)
+    if (not raw_transactions or problems) and text_result and not text_result.likely_scanned:
+        # No usable table, or the table's numbers don't check out: read the
+        # transaction lines directly, and keep whichever reading checks out.
+        line_result = line_extract.extract(
+            text_result.full_text,
+            thousands=bank_layout.line_format.get("thousands", ","),
+            fee_column=bool(bank_layout.line_format.get("fee_column", False)),
+        )
+        line_rows = [
+            (parse_date(r.date_raw) or r.date_raw, r.description, r.debit, r.credit, r.balance)
+            for r in line_result.rows
+        ]
+        if line_rows:
+            line_problems = _all_problems(line_rows, line_result.opening_balance, full_text, bank_layout, generic)
+            if line_result.skipped_lines:
+                shown = "; ".join(line_result.skipped_lines[:3])
+                line_problems.append(
+                    f"{len(line_result.skipped_lines)} line(s) look like transactions but couldn't be read "
+                    f"(e.g. {shown})"
+                )
+            if not raw_transactions or not line_problems:
+                raw_transactions, problems = line_rows, line_problems
 
-    else:
-        # Text extraction found no usable transaction table - fall back to OCR.
+    if not raw_transactions:
+        # Text extraction found no usable transactions - fall back to OCR.
         used_ocr = True
         try:
             ocr_result = ocr_extract.extract(
-                pdf_path, tesseract_cmd=settings.tesseract_cmd, poppler_path=settings.poppler_path
+                pdf_path,
+                tesseract_cmd=settings.tesseract_cmd,
+                poppler_path=settings.poppler_path,
+                password=password,
             )
         except Exception as exc:
             ocr_error = str(exc)
@@ -148,6 +209,9 @@ def parse_statement(
                     "please spot-check debit/credit amounts against the PDF"
                 )
 
+    if used_ocr and raw_transactions:
+        problems = _all_problems(raw_transactions, None, full_text, bank_layout, generic)
+
     statement_period = extract_statement_period(full_text, bank_layout, generic) or "Unknown"
     client, client_unmapped = _resolve_client(
         client_rules,
@@ -159,6 +223,14 @@ def parse_statement(
     )
     if client_unmapped:
         warnings.append("Client could not be matched from config/clients.yaml - add a rule or re-run interactively")
+    if not account_number and raw_transactions:
+        # Without it the statement can't be matched to its account's
+        # workbook, and statements must never be mixed.
+        problems.append(
+            "no account number found on the statement, so it can't be put with its account's other "
+            "statements - add an account_patterns entry for this bank in config/banks.yaml "
+            "(if added anyway, it gets a workbook of its own)"
+        )
 
     if not raw_transactions:
         error_bits = []
@@ -195,6 +267,7 @@ def parse_statement(
             balance=balance,
             source_file=filename,
             ocr=used_ocr,
+            account=account_number or "",
         )
         for date_val, description, debit, credit, balance in raw_transactions
     ]
@@ -205,8 +278,102 @@ def parse_statement(
         transactions=transactions,
         bank_key=bank_layout.key,
         bank_display_name=bank_layout.display_name,
+        account_number=account_number,
         client=client,
         statement_period=statement_period,
         used_ocr=used_ocr,
         warning="; ".join(warnings) if warnings else None,
+        problems=problems,
     )
+
+
+def _find_account_number(first_page_text: str, layout: BankLayout, generic: BankLayout) -> str | None:
+    for pattern in [*layout.account_patterns, *generic.account_patterns]:
+        m = re.search(pattern, first_page_text or "", re.IGNORECASE)
+        if m:
+            return re.sub(r"\D", "", m.group(1))
+    return None
+
+
+def _all_problems(raw_transactions, opening_balance, full_text, layout, generic) -> list[str]:
+    return [
+        *_check_transactions(raw_transactions, opening_balance),
+        *_check_control_totals(raw_transactions, full_text, layout, generic),
+    ]
+
+
+def _find_control_total(name: str, text: str, layout: BankLayout, generic: BankLayout) -> float | None:
+    for pattern in [*layout.control_totals.get(name, []), *generic.control_totals.get(name, [])]:
+        m = re.search(pattern, text, re.IGNORECASE)
+        if m:
+            return parse_amount(m.group(1))
+    return None
+
+
+def _check_control_totals(
+    raw_transactions: list[tuple[str | None, str, float | None, float | None, float | None]],
+    full_text: str,
+    layout: BankLayout,
+    generic: BankLayout,
+) -> list[str]:
+    """Compares what was read with totals the statement prints about
+    itself - the only way to notice a missed first or last transaction.
+    """
+    if not raw_transactions:
+        return []
+    problems = []
+    read_debits = sum(r[2] or 0 for r in raw_transactions)
+    read_credits = sum(r[3] or 0 for r in raw_transactions)
+    last_balance = next((r[4] for r in reversed(raw_transactions) if r[4] is not None), None)
+
+    checks = [
+        ("total_debits", "money out", read_debits),
+        ("total_credits", "money in", read_credits),
+        ("closing_balance", "closing balance", last_balance),
+    ]
+    for name, label, read in checks:
+        printed = _find_control_total(name, full_text, layout, generic)
+        if printed is None or read is None:
+            continue
+        if name != "closing_balance":
+            printed = abs(printed)  # some statements print payments as negative
+        if abs(printed - read) > TOLERANCE:
+            problems.append(
+                f"{label} on the statement is {printed:,.2f} but the transactions read add up to "
+                f"{read:,.2f} - a transaction is missing or misread"
+            )
+    return problems
+
+
+def _check_transactions(
+    raw_transactions: list[tuple[str | None, str, float | None, float | None, float | None]],
+    opening_balance: float | None,
+) -> list[str]:
+    """Problems that make a statement's transactions untrustworthy."""
+    if not raw_transactions:
+        return []
+    problems = []
+
+    bad_dates = [r for r in raw_transactions if not parse_date(r[0])]
+    if bad_dates:
+        problems.append(
+            f"{len(bad_dates)} transaction(s) have a date that couldn't be read "
+            f"(e.g. {bad_dates[0][0]!r} on {bad_dates[0][1]!r}) - they would be left out of the monthly reports"
+        )
+
+    balances = [r[4] for r in raw_transactions]
+    if all(b is None for b in balances):
+        problems.append("the statement has no running balance, so the amounts can't be cross-checked")
+    else:
+        missing = sum(1 for b in balances if b is None)
+        if missing:
+            problems.append(f"{missing} transaction(s) have no balance, so they can't be cross-checked")
+        breaks = balance_breaks([(r[2], r[3], r[4]) for r in raw_transactions], opening_balance)
+        if breaks:
+            first = raw_transactions[breaks[0].index]
+            problems.append(
+                f"{len(breaks)} transaction(s) don't add up with the running balance - a row may be misread "
+                f"or missing (first: {first[0]} {first[1]!r}, expected balance {breaks[0].expected:,.2f}, "
+                f"statement shows {breaks[0].actual:,.2f})"
+            )
+    return problems

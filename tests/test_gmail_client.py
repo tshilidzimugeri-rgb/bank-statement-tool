@@ -44,7 +44,7 @@ class _FakeMessagesResource:
 
     def get(self, userId, id, format):
         class _Req:
-            def execute(_self):
+            def execute(_self, **kwargs):
                 return self._message
         return _Req()
 

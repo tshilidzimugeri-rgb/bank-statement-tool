@@ -25,21 +25,30 @@ class BankLayout:
     period_patterns: list[str] = field(default_factory=list)
     amount_style: str = "split"
     columns: dict[str, list[str]] = field(default_factory=dict)
+    # total_debits / total_credits / closing_balance -> regexes
+    control_totals: dict[str, list[str]] = field(default_factory=dict)
+    # Line reader settings: thousands separator, fee_column
+    line_format: dict = field(default_factory=dict)
+    account_patterns: list[str] = field(default_factory=list)
 
 
 @dataclass
 class Settings:
     clients_config: Path
     banks_config: Path
+    categories_config: Path
     processed_db: Path
-    output_workbook: Path
+    # One workbook per bank account is written here (see excel_writer.workbook_path_for).
+    output_dir: Path
     incoming_pdfs_dir: Path
     email_downloads_dir: Path
+    uploads_dir: Path
     gmail_client_secret_file: Path
     gmail_token_file: Path
     gmail_lookback_days: int
     tesseract_cmd: str | None
     poppler_path: str | None
+    pdf_passwords: list[str] = field(default_factory=list)
 
 
 def load_settings(dotenv_path: Path | None = None) -> Settings:
@@ -53,15 +62,20 @@ def load_settings(dotenv_path: Path | None = None) -> Settings:
     return Settings(
         clients_config=_path("CLIENTS_CONFIG", "config/clients.yaml"),
         banks_config=_path("BANKS_CONFIG", "config/banks.yaml"),
+        categories_config=_path("CATEGORIES_CONFIG", "config/categories.yaml"),
         processed_db=_path("PROCESSED_DB", "data/processed/processed.db"),
-        output_workbook=_path("OUTPUT_WORKBOOK", "output/combined_statements.xlsx"),
+        output_dir=_path("OUTPUT_DIR", "output"),
         incoming_pdfs_dir=_path("INCOMING_PDFS_DIR", "data/incoming_pdfs"),
         email_downloads_dir=_path("EMAIL_DOWNLOADS_DIR", "data/email_downloads"),
+        uploads_dir=_path("UPLOADS_DIR", "data/uploads"),
         gmail_client_secret_file=_path("GMAIL_CLIENT_SECRET_FILE", "credentials.json"),
         gmail_token_file=_path("GMAIL_TOKEN_FILE", "token.json"),
         gmail_lookback_days=int(os.environ.get("GMAIL_LOOKBACK_DAYS", "30")),
         tesseract_cmd=os.environ.get("TESSERACT_CMD"),
         poppler_path=os.environ.get("POPPLER_PATH"),
+        pdf_passwords=[
+            pw.strip() for pw in os.environ.get("STATEMENT_PDF_PASSWORDS", "").split(",") if pw.strip()
+        ],
     )
 
 
@@ -86,6 +100,9 @@ def load_bank_layouts(path: Path) -> tuple[dict[str, BankLayout], BankLayout]:
             period_patterns=entry.get("period_patterns", []),
             amount_style=entry.get("amount_style", "split"),
             columns=entry.get("columns", {}),
+            control_totals=entry.get("control_totals") or {},
+            line_format=entry.get("line_format") or {},
+            account_patterns=entry.get("account_patterns") or [],
         )
     generic_entry = data.get("generic") or {}
     generic = BankLayout(
@@ -95,5 +112,7 @@ def load_bank_layouts(path: Path) -> tuple[dict[str, BankLayout], BankLayout]:
         period_patterns=generic_entry.get("period_patterns", []),
         amount_style=generic_entry.get("amount_style", "split"),
         columns=generic_entry.get("columns", {}),
+        control_totals=generic_entry.get("control_totals") or {},
+        account_patterns=generic_entry.get("account_patterns") or [],
     )
     return layouts, generic

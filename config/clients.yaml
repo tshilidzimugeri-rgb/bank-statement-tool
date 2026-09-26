@@ -12,14 +12,21 @@
 # interactively when running in a terminal, and will otherwise label the
 # statement "UNMAPPED_CLIENT" and flag it for manual review.
 #
-# Example (edit/replace with your real clients):
+# Add your real clients under "clients:" below.
 clients:
-  - name: "Acme Trading CC"
+  - name: "FTW Properties"
     match:
-      - "acme"
-      - "acmetrading.co.za"
+      - "ftw properties"
+      - "10237421516"
+      - "10 23 742 151 6"
 
-  - name: "Jane Dlamini"
-    match:
-      - "jane.dlamini@"
-      - "jane dlamini"
+# Example entries (uncomment and edit):
+#  - name: "Acme Trading CC"
+#    match:
+#      - "acme"
+#      - "acmetrading.co.za"
+
+#  - name: "Jane Dlamini"
+#    match:
+#      - "jane.dlamini@"
+#      - "jane dlamini"

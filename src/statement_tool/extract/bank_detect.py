@@ -19,7 +19,10 @@ def extract_statement_period(full_text: str, layout: BankLayout, generic: BankLa
     for pattern in list(layout.period_patterns) + list(generic.period_patterns):
         m = re.search(pattern, text, re.IGNORECASE)
         if m:
-            return re.sub(r"\s+", " ", m.group(1)).strip(" .:-")
+            # A pattern may capture the start and end dates as separate groups
+            # when other text sits between them on the page.
+            parts = [re.sub(r"\s+", " ", g).strip(" .:-") for g in m.groups() if g]
+            return " to ".join(parts)
     return None
 
 

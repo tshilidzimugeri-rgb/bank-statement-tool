@@ -13,7 +13,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import config as config_mod
-from .excel_writer import append_transactions
+from .categorize import load_categories
+from .excel_writer import MixedAccountsError, WorkbookLockedError, append_transactions, workbook_path_for
 from .extract.parser import parse_statement
 from .models import StatementResult
 from .store import ProcessedStore, sha256_of_bytes, sha256_of_file
@@ -27,9 +28,10 @@ class RunStats:
     transactions_added: int = 0
     problems: list[StatementResult] = field(default_factory=list)
     reviews: list[StatementResult] = field(default_factory=list)
+    workbooks: set[Path] = field(default_factory=set)
 
 
-def _print_summary(stats: RunStats, *, scanned_label: str, workbook: Path) -> None:
+def _print_summary(stats: RunStats, *, scanned_label: str) -> None:
     print("\n" + "=" * 60)
     print("RUN SUMMARY")
     print("=" * 60)
@@ -52,7 +54,8 @@ def _print_summary(stats: RunStats, *, scanned_label: str, workbook: Path) -> No
     if not stats.reviews and not stats.problems:
         print("\nNothing needs manual review.")
     print("=" * 60)
-    print(f"\nCombined workbook: {workbook}")
+    for workbook in sorted(stats.workbooks):
+        print(f"\nUpdated workbook: {workbook}")
 
 
 def _process_one_pdf(
@@ -64,6 +67,7 @@ def _process_one_pdf(
     store: ProcessedStore,
     stats: RunStats,
     interactive: bool,
+    allow_problems: bool = False,
     sender: str | None = None,
     subject: str | None = None,
 ) -> None:
@@ -83,9 +87,24 @@ def _process_one_pdf(
         stats.problems.append(result)
         return
 
-    write_result = append_transactions(settings.output_workbook, result.transactions)
+    if result.problems and not allow_problems:
+        result.error = (
+            "NOT added - numbers don't check out: " + "; ".join(result.problems)
+            + " (compare with the PDF; rerun with --allow-problems to add it anyway)"
+        )
+        stats.problems.append(result)
+        return
+
+    workbook = workbook_path_for(settings.output_dir, result.client, result.account_number, result.source_file)
+    try:
+        write_result = append_transactions(workbook, result.transactions, load_categories(settings.categories_config))
+    except (WorkbookLockedError, MixedAccountsError) as exc:
+        result.error = str(exc)
+        stats.problems.append(result)
+        return
     stats.transactions_added += write_result.added
     stats.processed += 1
+    stats.workbooks.add(workbook)
     store.mark_processed(
         source_id, content_hash, pdf_path.name, result.client, result.bank_display_name,
         len(result.transactions),
@@ -123,9 +142,10 @@ def cmd_process_folder(args: argparse.Namespace) -> int:
                 content_hash=content_hash,
                 layouts=layouts, generic=generic, client_rules=client_rules, settings=settings,
                 store=store, stats=stats, interactive=not args.no_interactive,
+                allow_problems=args.allow_problems,
             )
 
-    _print_summary(stats, scanned_label="PDFs scanned", workbook=settings.output_workbook)
+    _print_summary(stats, scanned_label="PDFs scanned")
     return 0
 
 
@@ -172,10 +192,11 @@ def cmd_fetch_email(args: argparse.Namespace) -> int:
                     content_hash=content_hash,
                     layouts=layouts, generic=generic, client_rules=client_rules, settings=settings,
                     store=store, stats=stats, interactive=not args.no_interactive,
+                    allow_problems=args.allow_problems,
                     sender=info.sender, subject=info.subject,
                 )
 
-    _print_summary(stats, scanned_label="Attachments scanned", workbook=settings.output_workbook)
+    _print_summary(stats, scanned_label="Attachments scanned")
     return 0
 
 
@@ -187,6 +208,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_folder.add_argument("--folder", help="Folder of PDFs (default: data/incoming_pdfs)")
     p_folder.add_argument("--reprocess", action="store_true", help="Reprocess files even if already recorded")
     p_folder.add_argument(
+        "--allow-problems", action="store_true",
+        help="Add statements even if their transactions don't add up with their balances",
+    )
+    p_folder.add_argument(
         "--no-interactive", action="store_true",
         help="Never prompt for client mapping; unmapped statements are labeled UNMAPPED_CLIENT",
     )
@@ -195,6 +220,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_email = sub.add_parser("fetch-email", help="Search Gmail for statement PDFs and process the new ones")
     p_email.add_argument("--days", type=int, help="Lookback window in days (default: GMAIL_LOOKBACK_DAYS or 30)")
     p_email.add_argument("--reprocess", action="store_true", help="Reprocess attachments even if already recorded")
+    p_email.add_argument(
+        "--allow-problems", action="store_true",
+        help="Add statements even if their transactions don't add up with their balances",
+    )
     p_email.add_argument(
         "--no-interactive", action="store_true",
         help="Never prompt for client mapping; unmapped statements are labeled UNMAPPED_CLIENT",

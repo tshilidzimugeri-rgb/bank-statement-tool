@@ -1,11 +1,33 @@
 # statement-tool
 
-Turns client bank statement PDFs into one combined Excel workbook, and can
-pull the PDFs straight from a Gmail inbox on demand. Built incrementally:
+Turns bank statement PDFs into an Excel workbook of transactions plus
+financial reports (monthly summary, income statement, cash flow, category
+breakdown). Built incrementally:
 
 - **Phase 1 (done):** folder of PDFs -> combined `.xlsx`.
 - **Phase 2 (done):** Gmail search/download layered on top of the same
-  parser, using the Gmail API with OAuth.
+  parser, using the Gmail API with OAuth (optional - uploading is the main
+  way in).
+- **Phase 3 (done):** upload page, transaction categories, and the
+  financial report sheets.
+
+## Quick start: upload page
+
+Double-click **`run_app.bat`** (or run
+`.venv\Scripts\streamlit run src\statement_tool\app.py`). A page opens in
+your browser at http://localhost:8501:
+
+1. Drop in one or more statement PDFs. If they're password-protected, type
+   the password too.
+2. Click **Add to workbook**. Each statement is read, its transactions are
+   categorised and added to its account's workbook in `output/` (e.g.
+   `output/FTW Properties (10237421516).xlsx`), and the page
+   shows income, expenses, profit and charts.
+3. Click **Download Excel workbook** for the full reports.
+
+Uploading the same statement twice, or statements that overlap (a 6-month
+statement plus the monthly ones), never double-counts: each transaction is
+recognised by its own date, description, amount and balance.
 
 ## Setup
 
@@ -34,8 +56,17 @@ crashing the run.
 
 ## Configuration
 
-Two YAML files, both meant to be hand-edited - no code changes needed to
-onboard a new client or a straightforward new bank:
+Three YAML files, all meant to be hand-edited - no code changes needed to
+recategorise spending, add a client, or add a straightforward new bank:
+
+- **`config/categories.yaml`** - the reporting categories. Each has a type
+  (`income`, `expense`, `transfer` between own accounts, or `drawings` for
+  personal money out) and the description text that puts a transaction in
+  it. Unmatched transactions land in "Other income/expenses
+  (uncategorised)"; add a rule and click **Re-apply category rules** on the
+  upload page (or upload anything) to file them. You can also type a
+  category straight into a transaction's Category cell in Excel - hand
+  edits are kept on every later run.
 
 - **`config/clients.yaml`** - maps a client name to the sender/subject/
   filename/statement-text substrings that identify their statements. If a
@@ -51,6 +82,19 @@ onboard a new client or a straightforward new bank:
 
 Edit these directly - see the comments in each file for the exact format.
 
+### Password-protected statements
+
+Many banks (Standard Bank included) password-protect the statements they
+email. List the password(s) in `.env`, comma-separated - each is tried in
+turn until one opens the file:
+
+```
+STATEMENT_PDF_PASSWORDS=1234567890,9876543210
+```
+
+A statement that none of them open is reported as a failure in the run
+summary, naming this setting.
+
 ## Running (phase 1: local folder)
 
 Drop PDFs into `data/incoming_pdfs/` (or point `--folder` elsewhere), then:
@@ -61,11 +105,11 @@ Drop PDFs into `data/incoming_pdfs/` (or point `--folder` elsewhere), then:
 
 - Already-processed PDFs (tracked by file hash in
   `data/processed/processed.db`) are skipped automatically on the next run.
-- New transactions are appended to `output/combined_statements.xlsx` on a
+- New transactions are appended to their account's workbook in `output/` on a
   single `Transactions` sheet, formatted as an Excel Table with a `TOTAL`
   row driven by real `=SUM(...)` formulas (they recalculate if you edit a
-  cell), plus a `Summary` sheet with per-client/per-bank `SUMIFS` totals,
-  both fully rebuilt each run from whatever is currently in `Transactions`.
+  cell), plus the report sheets below, all rebuilt each run from whatever
+  is currently in `Transactions`.
 - A run summary prints how many PDFs were scanned/skipped/processed, how
   many transactions were added, and lists anything that failed to parse or
   needs a manual spot-check (OCR'd statements, unmapped clients, unparsable
@@ -78,6 +122,75 @@ Useful flags:
   tuning a new bank's column config).
 - `--no-interactive` - never prompt for client mapping (for scripted runs);
   unmatched statements are labeled `UNMAPPED_CLIENT` instead.
+
+## Safety checks
+
+Every statement is checked before anything is written, using the figures
+the bank prints itself:
+
+- **Running balance:** each transaction's balance must equal the previous
+  balance plus its credit minus its debit. A misread amount, a debit read
+  as a credit, or a skipped row breaks this.
+- **Statement totals:** where the statement prints its own totals (Standard
+  Bank's "Payments"/"Deposits" summary, or any "Closing balance" line), the
+  transactions read must add up to them exactly. This catches a missing
+  first or last row.
+- **Dates and unreadable lines:** a date that can't be read, or a line that
+  looks like a transaction but doesn't match the expected shape, is flagged
+  rather than dropped.
+
+A statement that fails any check is **not added** - the upload page (or the
+command-line run summary) says exactly what didn't add up. Once you've
+compared it with the PDF yourself, tick **Add even if checks fail** (or use
+`--allow-problems`) to add it anyway.
+
+The workbook itself is protected too:
+
+- The upload page checks the balance chain across the **whole workbook**
+  every time it opens, so a missing month between two statements shows up.
+- The workbook is saved to a temporary file and swapped in, so a crash
+  can't leave it half-written, and the previous 30 versions are kept in
+  `output/backups/`.
+- If the workbook is open in Excel, nothing is changed and you're told to
+  close it.
+- The month sheets find each transaction by its key, so sorting or
+  filtering the Transactions sheet in Excel can't mix up their figures.
+
+What the checks can't know: whether a transaction is in the right
+**category** or has the right **VAT** setting - those are judgement calls,
+so glance at the "uncategorised" list on the upload page and at the VAT
+column.
+
+## The workbook
+
+Each bank account gets its **own workbook**, named after the client in
+`config/clients.yaml` and the account number found on the statement (e.g.
+`FTW Properties (10237421516).xlsx`, or `Account 1234567890.xlsx` for an
+account with no client rule). Statements from different accounts are never
+mixed, so every balance and total is about one account. On the upload page,
+pick the account from the list to see its overview and download it.
+
+| Sheet | What it shows |
+| --- | --- |
+| Monthly Summary | Per month: opening balance, money in, money out, net, closing balance, and a check that should be 0 |
+| Income Statement | Income and expense categories by month, net profit; transfers and drawings listed separately, outside profit |
+| Cash Flow | Opening balance, cash from operations, transfers, drawings, closing balance, reconciled to the bank statement |
+| Category Breakdown | Count, money in/out and share of expenses per category, with a chart |
+| VAT Summary | Per month: income, expenses and difference, each incl. VAT, excl. VAT and the 15% VAT, plus VAT payable |
+| Jul 2026, Aug 2026, ... | One sheet per month: INCOME and EXPENSES listed separately (with references like JUL26R01 / JUL26P01), each amount split into excl. VAT and 15% VAT, with totals and a month summary |
+| Transactions | Every transaction, in date order, with its Month and Category |
+| Categories | The rules from `config/categories.yaml`, for reference |
+
+Whether a transaction includes VAT is its **VAT** (Yes/No) cell on the
+Transactions sheet, defaulted from its category (`vat:` in
+`config/categories.yaml`); change it there and the month sheets update.
+Transfers and personal payments appear in neither list.
+
+Totals are live `SUMIFS` formulas, so correcting a transaction or its
+category in Excel updates every report. Opening and closing balances come
+from the running balance printed on the statements. A non-zero value in a
+"Check" or "Difference" row means a month is missing a statement or a
+transaction was misread.
 
 ## Running (phase 2: Gmail)
 
@@ -130,9 +243,12 @@ Copy a block in `config/banks.yaml`, rename the key, and adjust:
   or `signed` (one amount column, negative = debit).
 
 No Python changes needed for a normal text-based statement with a
-recognizable header row. If a bank's layout doesn't have a clean header row
-pdfplumber can find, that's a case for extending `text_extract.py`/
-`column_map.py` - flag it and we'll add a heuristic for that specific shape.
+recognizable header row. If pdfplumber can't split a statement's table into
+columns, a line-based fallback (`line_extract.py`) reads rows shaped
+`date  description  amount  balance` straight from the text, using the
+running balance to confirm which side (debit/credit) each amount is on -
+this is what handles Standard Bank's 6-month statement. Layouts that fit
+neither are a case for a new heuristic in `text_extract.py`/`column_map.py`.
 
 ## Tests
 
@@ -151,6 +267,7 @@ and run with `--reprocess` to compare output by hand before trusting it.
 
 ```
 config/
+  categories.yaml       # reporting categories + description matching (edit me)
   clients.yaml          # client name <- sender/subject/filename/text matching (edit me)
   banks.yaml             # per-bank column layout + detection (edit me)
 src/statement_tool/
@@ -158,19 +275,23 @@ src/statement_tool/
   config.py               # loads the YAML + .env settings above
   models.py                # Transaction / StatementResult dataclasses
   store.py                  # SQLite "already processed" tracking
-  excel_writer.py            # combined workbook read/append/format
+  app.py                    # upload page (Streamlit) - started by run_app.bat
+  categorize.py              # assigns categories from config/categories.yaml
+  excel_writer.py            # workbook: transactions + report sheets
   gmail_client.py            # OAuth login, search, attachment download
   extract/
     bank_detect.py            # bank + client + statement-period detection
     column_map.py              # header row -> logical column mapping
     text_extract.py             # pdfplumber-based table extraction (primary)
+    line_extract.py              # line-by-line fallback when table columns can't be split
     ocr_extract.py                # pytesseract fallback for scanned PDFs
     amounts.py, dates.py           # shared value parsing
     parser.py                       # orchestrates the above per PDF
 data/incoming_pdfs/       # drop PDFs here for phase 1
+data/uploads/              # PDFs added through the upload page
 data/email_downloads/      # PDFs fetched via Gmail land here
 data/processed/            # processed.db (SQLite dedup record)
-output/                      # combined_statements.xlsx lands here
+output/                      # one workbook per bank account (+ backups/)
 tests/
 ```
 

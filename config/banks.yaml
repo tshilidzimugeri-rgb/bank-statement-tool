@@ -5,7 +5,8 @@
 #            match, the "generic" heuristics below are used instead.
 #
 # "period_patterns" - regexes (first capturing group = the statement period
-#            string) tried in order against the first page's text.
+#            string) tried in order against the first page's text. A pattern
+#            with two groups (start, end) is joined as "start to end".
 #
 # "columns" - for each logical column, a list of header-text aliases the
 #            column-mapper will look for (case-insensitive, substring match)
@@ -17,6 +18,22 @@
 # "amount_style":
 #   split  - debit and credit are separate columns (most SA banks)
 #   signed - a single "amount" column where negative = debit, positive = credit
+#
+# "account_patterns" (optional) - regexes (one capturing group) for the
+#            account number on the first page. Each account gets its own
+#            workbook, so two accounts' money is never mixed together.
+#
+# "control_totals" (optional) - regexes (one capturing group = the amount)
+#            for figures the statement prints about itself: total_debits,
+#            total_credits, closing_balance. When found, the transactions
+#            read must add up to them exactly, or the statement is flagged -
+#            this catches a missed first/last row that the running-balance
+#            check can't see. The generic block's patterns are tried too.
+#
+# "line_format" (optional) - for the line-by-line reader used when a table
+#            can't be split into columns: "thousands" separator in amounts
+#            ("," by default, " " for "3 205.00"), and "fee_column: true" if
+#            rows can carry a separate fee amount before the balance.
 #
 banks:
   fnb:
@@ -42,9 +59,19 @@ banks:
       - "standard bank"
       - "standardbank.co.za"
       - "the standard bank of south africa"
+    account_patterns: ["account number:?\\s*(\\d[\\d ]{6,}\\d)"]
     period_patterns:
       - "statement period[:\\s]+([0-9A-Za-z /.\\-]+to[0-9A-Za-z /.\\-]+)"
       - "period[:\\s]+([0-9A-Za-z /.\\-]+to[0-9A-Za-z /.\\-]+)"
+      # 6-month statement: "From: 27 Feb 26" ... "To: 26 Aug 26", with an
+      # address line printed between them.
+      - "from:\\s*(\\d{1,2} [A-Za-z]{3,9} \\d{2,4})[\\s\\S]{0,80}?to:\\s*(\\d{1,2} [A-Za-z]{3,9} \\d{2,4})"
+    # 6-month statement's "Statement Summary": Payments -R321,778.92 /
+    # Deposits R465,000.00. (The column header "Payments Deposits Balance"
+    # has no amount after it, so it doesn't match.)
+    control_totals:
+      total_debits: ["(?m)^payments\\s+-?r\\s?(-?[\\d,]+\\.\\d{2})\\s*$"]
+      total_credits: ["(?m)^deposits\\s+r\\s?(-?[\\d,]+\\.\\d{2})\\s*$"]
     amount_style: split
     columns:
       date: ["date", "transaction date"]
@@ -91,9 +118,22 @@ banks:
     detect:
       - "capitec bank"
       - "capitecbank.co.za"
+    account_patterns: ["(?m)^account\\s+(\\d{6,})"]
     period_patterns:
       - "statement period[:\\s]+([0-9A-Za-z /.\\-]+to[0-9A-Za-z /.\\-]+)"
       - "date range[:\\s]+([0-9A-Za-z /.\\-]+to[0-9A-Za-z /.\\-]+)"
+      # "From Date: 01/08/2026 ... To Date: 26/09/2026" on separate lines.
+      - "from date:\\s*(\\d{2}/\\d{2}/\\d{4})[\\s\\S]{0,120}?to date:\\s*(\\d{2}/\\d{2}/\\d{4})"
+    # "Money In Summary R23 340.54 Money Out Summary -R23 721.56" (money
+    # out includes fees).
+    control_totals:
+      total_credits: ["money in summary\\s+r\\s?(-?\\d{1,3}(?:[ ,]\\d{3})*\\.\\d{2})"]
+      total_debits: ["money out summary\\s+-?r\\s?(-?\\d{1,3}(?:[ ,]\\d{3})*\\.\\d{2})"]
+    # Transaction History rows: "date description [money in|money out]
+    # [fee] balance", amounts signed with space thousands ("-3 205.00").
+    line_format:
+      thousands: " "
+      fee_column: true
     amount_style: signed
     columns:
       date: ["date", "posting date"]
@@ -107,10 +147,15 @@ banks:
 # in the run summary so they get a look before you trust the numbers.
 generic:
   display_name: "Unknown/Generic"
+  # Tried for every bank after its own account_patterns.
+  account_patterns: ["account (?:number|no\\.?)[:\\s]*(\\d[\\d -]{5,}\\d)"]
   period_patterns:
     - "statement period[:\\s]+([0-9A-Za-z /.\\-]+to[0-9A-Za-z /.\\-]+)"
     - "period[:\\s]+([0-9A-Za-z /.\\-]+to[0-9A-Za-z /.\\-]+)"
     - "statement date[:\\s]+([0-9A-Za-z /.\\-]+)"
+  # Tried for every bank after its own control_totals.
+  control_totals:
+    closing_balance: ["closing balance[:\\s]+r?\\s?(-?\\d{1,3}(?:[ ,]\\d{3})*\\.\\d{2}(?:\\s?(?:cr|dr)\\b)?)"]
   amount_style: split
   columns:
     date: ["date", "transaction date", "posting date"]

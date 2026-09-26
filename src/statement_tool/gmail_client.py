@@ -18,6 +18,11 @@ from .config import ClientRule, Settings
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 
+# Retries (with exponential backoff) on rate-limit and transient server errors.
+# Gmail's per-user quota is per minute, so a large mailbox can briefly trip it;
+# 6 retries backs off for roughly a minute in total before giving up.
+API_RETRIES = 6
+
 
 @dataclass
 class Attachment:
@@ -83,7 +88,7 @@ def search_message_ids(service, query: str) -> list[str]:
     ids: list[str] = []
     request = service.users().messages().list(userId="me", q=query)
     while request is not None:
-        response = request.execute()
+        response = request.execute(num_retries=API_RETRIES)
         ids.extend(m["id"] for m in response.get("messages", []))
         request = service.users().messages().list_next(previous_request=request, previous_response=response)
     return ids
@@ -104,7 +109,7 @@ def _walk_parts(part: dict) -> list[dict]:
 
 
 def get_message_info(service, message_id: str) -> MessageInfo:
-    msg = service.users().messages().get(userId="me", id=message_id, format="full").execute()
+    msg = service.users().messages().get(userId="me", id=message_id, format="full").execute(num_retries=API_RETRIES)
     payload = msg.get("payload", {})
     headers = payload.get("headers", [])
     sender = _header(headers, "From")
@@ -126,7 +131,7 @@ def get_message_info(service, message_id: str) -> MessageInfo:
 def download_attachment(service, message_id: str, attachment_id: str) -> bytes:
     att = service.users().messages().attachments().get(
         userId="me", messageId=message_id, id=attachment_id
-    ).execute()
+    ).execute(num_retries=API_RETRIES)
     return base64.urlsafe_b64decode(att["data"])
 
 

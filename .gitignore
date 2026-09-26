@@ -10,3 +10,6 @@ data/processed/*.db
 data/incoming_pdfs/*.pdf
 output/*.xlsx
 *.log
+data/uploads/
+data/email_downloads/
+output/backups/

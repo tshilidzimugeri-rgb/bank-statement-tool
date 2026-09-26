@@ -54,4 +54,10 @@ def map_header_row(header_row: list[str | None], layout: BankLayout) -> dict[str
     if balance_idx is not None:
         mapping["balance"] = balance_idx
 
+    # Two headings in one cell (e.g. "Debit Credit" merged by the table
+    # finder) means the columns can't be told apart - reading it anyway would
+    # put every amount in both. Reject it so the line-based reader is used.
+    if len(set(mapping.values())) < len(mapping):
+        return None
+
     return mapping

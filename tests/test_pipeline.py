@@ -23,7 +23,7 @@ def _layouts():
 
 
 def _client_rules():
-    return config_mod.load_client_rules(PROJECT_ROOT / "config" / "clients.yaml")
+    return config_mod.load_client_rules(FIXTURES / "clients.yaml")
 
 
 @pytest.fixture(scope="module")

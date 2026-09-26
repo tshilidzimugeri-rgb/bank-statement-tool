@@ -44,10 +44,12 @@ class OcrExtractionResult:
     rows: list[OcrRow]
 
 
-def _render_and_ocr(pdf_path: Path, poppler_path: str | None) -> str:
+def _render_and_ocr(pdf_path: Path, poppler_path: str | None, password: str | None) -> str:
     kwargs = {}
     if poppler_path:
         kwargs["poppler_path"] = poppler_path
+    if password:
+        kwargs["userpw"] = password
     images = convert_from_path(str(pdf_path), dpi=300, **kwargs)
     texts = []
     for image in images:
@@ -55,13 +57,15 @@ def _render_and_ocr(pdf_path: Path, poppler_path: str | None) -> str:
     return "\n".join(texts)
 
 
-def extract(pdf_path: Path, *, tesseract_cmd: str | None, poppler_path: str | None) -> OcrExtractionResult:
+def extract(
+    pdf_path: Path, *, tesseract_cmd: str | None, poppler_path: str | None, password: str | None = None
+) -> OcrExtractionResult:
     if tesseract_cmd:
         pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
     elif "TESSERACT_CMD" in os.environ:
         pytesseract.pytesseract.tesseract_cmd = os.environ["TESSERACT_CMD"]
 
-    full_text = _render_and_ocr(pdf_path, poppler_path)
+    full_text = _render_and_ocr(pdf_path, poppler_path, password)
 
     rows: list[OcrRow] = []
     for line in full_text.splitlines():

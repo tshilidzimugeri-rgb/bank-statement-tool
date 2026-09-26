@@ -1,0 +1,77 @@
+# Categorises transactions for the financial reports (Income Statement,
+# Category Breakdown, Cash Flow).
+#
+# Each entry is one category:
+#   name  - shown in the reports
+#   type  - one of:
+#             income    - counts as income in the Income Statement
+#             expense   - counts as an expense in the Income Statement
+#             transfer  - money moved between your own accounts; left out of
+#                         profit, shown separately in the Cash Flow
+#             drawings  - personal/family money taken out of the business;
+#                         left out of profit, shown separately in the Cash Flow
+#   match - case-insensitive text to look for in the transaction description
+#   vat   - optional, yes/no: whether amounts in this category include 15%
+#           VAT. Defaults to yes for income and expense categories. You can
+#           still change it for a single transaction in the VAT column of
+#           the Transactions sheet.
+#
+# The FIRST category whose match list hits wins, so put specific entries
+# above general ones. Anything that matches nothing lands in
+# "Other income (uncategorised)" or "Other expenses (uncategorised)" -
+# check those in the Category Breakdown and add a rule here for them.
+#
+# You can also change a single transaction's category by editing its
+# Category cell in the Transactions sheet - reports recalculate, and the
+# edit is kept when more statements are added later.
+
+categories:
+  # --- Income -------------------------------------------------------------
+  - name: "Income - CHAMELA transfers"
+    type: income
+    match: ["chamela"]
+
+  - name: "Income - other deposits"
+    type: income
+    match: ["payshap payment from", "real time transfer from", "deposit"]
+
+  # --- Expenses -----------------------------------------------------------
+  - name: "Insurance"
+    type: expense
+    match: ["outsurance", "insurance premium"]
+
+  - name: "Vehicle tracking"
+    type: expense
+    match: ["cartrack"]
+
+  - name: "Levies & property admin"
+    type: expense
+    vat: no  # sectional-title levies are VAT-exempt
+    match: ["huurkor", "roodepark", "ftw001-u141"]
+
+  - name: "Water & electricity"
+    type: expense
+    match: ["water purchase", "electricity", "prepaid elec"]
+
+  - name: "Repairs & maintenance"
+    type: expense
+    match: ["repair", "laptop fix", "laptop battery", "laptop hardrive"]
+
+  - name: "Equipment & purchases"
+    type: expense
+    match: ["takealot", "istore"]
+
+  - name: "Bank charges"
+    type: expense
+    match: ["management fee", "fee:", "fee -", "fee-", "fee immediate"]
+
+  # --- Not profit: own-account transfers and personal ----------------------
+  # Internet-banking transfers to a masked account number (e.g.
+  # "*****8121188 12H50 *****0420") - another account of the same holder.
+  - name: "Transfers to own accounts"
+    type: transfer
+    match: ["*****"]
+
+  - name: "Family & personal"
+    type: drawings
+    match: ["mom ", "birthday", "bus ticket", "sneakers", "tshilidzi", "wavhudi"]

@@ -1,0 +1,12 @@
+# Test-only client mapping, kept separate from config/clients.yaml so editing
+# the real client list never breaks the tests.
+clients:
+  - name: "Acme Trading CC"
+    match:
+      - "acme"
+      - "acmetrading.co.za"
+
+  - name: "Jane Dlamini"
+    match:
+      - "jane.dlamini@"
+      - "jane dlamini"
