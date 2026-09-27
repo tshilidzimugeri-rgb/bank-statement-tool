@@ -379,10 +379,11 @@ class _Path:
         self.pending = []
 
 
-def extract(text: str, period_end: date | None = None) -> AutoResult:
+def extract(text: str, period_end: date | None = None, period_start: date | None = None) -> AutoResult:
     lines = [ln.strip() for ln in (text or "").splitlines()]
     kind, month_first = _choose_date_kind(lines)
     reference_end = period_end or _latest_full_date(lines) or date.today()
+    reference_start = period_start if period_end else None
 
     parsed: list[_Line] = []
     for i, line in enumerate(lines):
@@ -467,7 +468,7 @@ def extract(text: str, period_end: date | None = None) -> AutoResult:
     finished.sort(key=lambda f: f[0])
     best = finished[0][1]
 
-    rows = _build_rows(best.ops, lines, kind, month_first, reference_end)
+    rows = _build_rows(best.ops, lines, kind, month_first, reference_end, reference_start)
     _flag_ambiguity(rows, best, [p for score, p in finished[1:] if score[0] == finished[0][0][0]])
     closing = next((c for c in closings if best.state is not None and abs(c - best.state) <= TOLERANCE),
                    closings[0] if closings else None)
@@ -705,7 +706,7 @@ def _explain(state, readings, nxt: _Line | None, allow_flip):
     return None
 
 
-def _build_rows(ops, lines, kind, month_first, reference_end) -> list[AutoRow]:
+def _build_rows(ops, lines, kind, month_first, reference_end, reference_start=None) -> list[AutoRow]:
     rows = []
     for line, direction, amount, balance, upto, check, prefix in ops:
         date_check = ""
@@ -714,7 +715,7 @@ def _build_rows(ops, lines, kind, month_first, reference_end) -> list[AutoRow]:
         elif line.date.day is None:
             iso, date_check = None, f"date unreadable ({line.date.raw})"
         else:
-            iso = _with_year(line.date, reference_end)
+            iso = _with_year(line.date, reference_end, reference_start)
         desc = line.text[(line.date.end if line.date else 0):upto].strip(" |")
         for extra in lines[line.index + 1: line.index + 3]:
             if (not extra or len(extra) > 70 or money_tokens(extra) or (kind and _match_date(extra, kind, month_first))
@@ -730,17 +731,42 @@ def _build_rows(ops, lines, kind, month_first, reference_end) -> list[AutoRow]:
     return rows
 
 
-def _with_year(hit: DateHit, reference_end: date) -> str | None:
+def _with_year(hit: DateHit, reference_end: date, reference_start: date | None = None) -> str | None:
     """A date without a year gets the year from the statement period it's in."""
     if hit.year:
         return date(hit.year, hit.month, hit.day).isoformat()
-    try:
-        candidate = date(reference_end.year, hit.month, hit.day)
-    except ValueError:  # 29 Feb in a non-leap year: not a real date there
-        return None
-    if candidate > reference_end + timedelta(days=31):
-        candidate = candidate.replace(year=candidate.year - 1)
-    return candidate.isoformat()
+    found = date_in_period(hit.month, hit.day, reference_start, reference_end)
+    return found.isoformat() if found else None
+
+
+def date_in_period(month: int, day: int, period_start: date | None, period_end: date) -> date | None:
+    """The date a year-less "11 Aug" falls on. With the statement period
+    known: the year that puts it inside the period, or else the one nearest
+    to it (a row dated a day after the period ends is still that year) - so a
+    6- or 12-month statement crossing New Year gets each month's own year.
+    With only the end known: the end's year, or the year before for dates
+    more than a month after the end."""
+    if period_start is None:
+        try:
+            candidate = date(period_end.year, month, day)
+        except ValueError:  # 29 Feb in a non-leap year: not a real date there
+            return None
+        if candidate > period_end + timedelta(days=31):
+            candidate = candidate.replace(year=candidate.year - 1)
+        return candidate
+    candidates = []
+    for year in (period_end.year, period_end.year - 1, period_end.year - 2):
+        try:
+            candidates.append(date(year, month, day))
+        except ValueError:  # 29 Feb outside a leap year
+            continue
+
+    def distance(d: date) -> int:
+        if period_start <= d <= period_end:
+            return 0
+        return min(abs((d - period_start).days), abs((d - period_end).days))
+
+    return min(candidates, key=distance) if candidates else None
 
 
 def _find_balance(lines: list[str], words: re.Pattern, first: bool, allow_flip: bool = False) -> list[float]:

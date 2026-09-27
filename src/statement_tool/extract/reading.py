@@ -65,7 +65,9 @@ def assess(rows: list[Row], opening: float | None, full_text: str, layout: BankL
            period: tuple[date, date] | None = None) -> Reading:
     """groups_confirmed: rows printed without a balance were already
     confirmed by the next balance (the layout-independent reader does that)."""
-    from .parser import _check_control_totals, _find_control_total  # parser imports this module
+    from .parser import (  # parser imports this module
+        _check_control_totals, _find_control_total, _find_control_totals, statement_total,
+    )
 
     def flag(row: Row, reason: str) -> None:
         if reason not in row.check:
@@ -149,8 +151,13 @@ def assess(rows: list[Row], opening: float | None, full_text: str, layout: BankL
         "opening_balance": opening, "total_credits": credits, "total_debits": debits,
         "net_movement": round(credits - debits, 2), "computed_closing": computed_closing,
         "printed_closing": next((c for c in closings if last_balance is not None
-                                 and abs(c - last_balance) <= TOLERANCE), closings[0] if closings else None), "printed_total_credits": printed["total_credits"],
-        "printed_total_debits": printed["total_debits"], "last_balance": last_balance,
+                                 and abs(c - last_balance) <= TOLERANCE), closings[0] if closings else None),
+        # For the whole statement: a statement of several months can print totals for each month.
+        "printed_total_credits": statement_total(
+            [abs(v) for v in _find_control_totals("total_credits", full_text, layout, generic)], credits),
+        "printed_total_debits": statement_total(
+            [abs(v) for v in _find_control_totals("total_debits", full_text, layout, generic)], debits),
+        "last_balance": last_balance,
     }
     return Reading(rows, problems, report)
 
@@ -212,7 +219,7 @@ def _flag_date_order(rows: list[Row], flag) -> None:
 
 def auto_reading(text: str, period: tuple[date, date] | None, full_text: str, layout: BankLayout,
                  generic: BankLayout) -> Reading:
-    result = auto_extract.extract(text, period[1] if period else None)
+    result = auto_extract.extract(text, period[1] if period else None, period[0] if period else None)
     rows = [Row(r.date_iso, r.description, r.debit, r.credit, r.balance, r.unassigned, r.evidence, r.check)
             for r in result.rows]
     return assess(rows, result.opening_balance, full_text, layout, generic, groups_confirmed=True, period=period)

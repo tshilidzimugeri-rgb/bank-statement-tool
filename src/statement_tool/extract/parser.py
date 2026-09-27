@@ -17,6 +17,7 @@ from ..checks import TOLERANCE, balance_breaks
 from ..models import StatementResult, Transaction
 from . import line_extract, text_extract
 from .amounts import parse_amount
+from .auto_extract import date_in_period
 from .bank_detect import detect_bank, extract_statement_period, match_client
 from .dates import parse_date
 from .reading import REVIEW_REQUIRED, Reading, Row, assess, auto_reading, choose, compare, finalize
@@ -185,7 +186,6 @@ def _table_rows(raw_rows, layout: BankLayout) -> list[Row]:
 def _line_readings(text, period, full_text, layout, generic) -> list[Reading]:
     """One reading per known line shape."""
     out = []
-    period_end = _period_end(period)
     for fmt in _line_formats_to_try(layout):
         result = line_extract.extract(
             text,
@@ -197,7 +197,7 @@ def _line_readings(text, period, full_text, layout, generic) -> list[Reading]:
         )
         rows = []
         for r in result.rows:
-            date_raw = _with_year(r.date_raw, period_end) if fmt.get("dates_without_year") else r.date_raw
+            date_raw = _with_year(r.date_raw, period) if fmt.get("dates_without_year") else r.date_raw
             rows.append(Row(parse_date(date_raw) or date_raw or None, r.description, r.debit, r.credit, r.balance,
                             unassigned=r.unassigned, evidence=r.evidence))
         if rows:
@@ -271,10 +271,9 @@ def _read_lines(text, fmt, period, full_text, layout, generic):
         trailing_charges_column=bool(fmt.get("trailing_charges_column", False)),
         unmarked_is_debit=bool(fmt.get("unmarked_is_debit", False)),
     )
-    period_end = _period_end(period)
     rows = []
     for r in result.rows:
-        date_raw = _with_year(r.date_raw, period_end) if fmt.get("dates_without_year") else r.date_raw
+        date_raw = _with_year(r.date_raw, period) if fmt.get("dates_without_year") else r.date_raw
         rows.append((parse_date(date_raw) or date_raw, r.description, r.debit, r.credit, r.balance))
     if not rows:
         return rows, []
@@ -308,18 +307,21 @@ def _period_end(period: str | None) -> date | None:
     return date.fromisoformat(iso) if iso else None
 
 
-def _with_year(date_raw: str, period_end: date | None) -> str:
-    """Adds the year to a "11 Aug" date: the period's end year, or the year
-    before for dates after the end month-day (a period running Dec -> Jan).
+def _with_year(date_raw: str, period: str | None) -> str:
+    """Adds the year to a "11 Aug" date: the one that puts it inside the
+    statement period (a period can run Dec -> Jan, or over several months).
     Left as-is (and so reported as unreadable) if the period is unknown.
     """
+    period_range = _period_range(period)
+    period_end = period_range[1] if period_range else _period_end(period)
     if period_end is None:
         return date_raw
-    iso = parse_date(f"{date_raw} {period_end.year}")
+    iso = parse_date(f"{date_raw} 2000")  # a leap year, so 29 Feb reads too
     if iso is None:
         return date_raw
-    year = period_end.year - 1 if date.fromisoformat(iso) > period_end else period_end.year
-    return f"{date_raw} {year}"
+    day = date.fromisoformat(iso)
+    found = date_in_period(day.month, day.day, period_range[0] if period_range else None, period_end)
+    return f"{date_raw} {found.year}" if found else date_raw
 
 
 def _find_account_number(first_page_text: str, layout: BankLayout, generic: BankLayout) -> str | None:
@@ -337,12 +339,35 @@ def _all_problems(raw_transactions, opening_balance, full_text, layout, generic)
     ]
 
 
-def _find_control_total(name: str, text: str, layout: BankLayout, generic: BankLayout) -> float | None:
+def _find_control_totals(name: str, text: str, layout: BankLayout, generic: BankLayout) -> list[float]:
+    """Every figure the first matching pattern finds, in order. A 3- or
+    6-month statement is often monthly statements put together, each month
+    printing its own totals and closing balance."""
     for pattern in [*layout.control_totals.get(name, []), *generic.control_totals.get(name, [])]:
-        m = re.search(pattern, text, re.IGNORECASE)
-        if m:
-            return parse_amount(m.group(1))
-    return None
+        found = [parse_amount(m.group(1)) for m in re.finditer(pattern, text, re.IGNORECASE)]
+        found = [v for v in found if v is not None]
+        if found:
+            return found
+    return []
+
+
+def _find_control_total(name: str, text: str, layout: BankLayout, generic: BankLayout) -> float | None:
+    found = _find_control_totals(name, text, layout, generic)
+    return found[0] if found else None
+
+
+def statement_total(found: list[float], read: float | None) -> float | None:
+    """The total a statement prints for all of it: its one total; or, where
+    each month prints its own, the months added up - or a grand total printed
+    besides them (the largest), whichever the transactions read agree with."""
+    if not found:
+        return None
+    if len(found) == 1:
+        return found[0]
+    together, grand = round(sum(found), 2), max(found)
+    if read is not None and abs(grand - read) <= TOLERANCE:
+        return grand
+    return together
 
 
 def _check_control_totals(
@@ -370,16 +395,19 @@ def _check_control_totals(
     for name, label, read in checks:
         if name == "closing_balance" and not include_closing:
             continue
-        printed = _find_control_total(name, full_text, layout, generic)
-        if printed is None or read is None:
+        found = _find_control_totals(name, full_text, layout, generic)
+        if not found or read is None:
             continue
-        if name != "closing_balance":
-            printed = abs(printed)  # some statements print payments as negative
+        if name == "closing_balance":
+            printed = found[-1]  # the last month's closing balance is the statement's
+        else:
+            # some statements print payments as negative
+            printed = statement_total([abs(v) for v in found], read)
         if abs(printed - read) > TOLERANCE:
-            problems.append(
-                f"{label} on the statement is {printed:,.2f} but the transactions read add up to "
-                f"{read:,.2f} - a transaction is missing or misread"
-            )
+            what = (f"{label} on the statement is {printed:,.2f}" if len(found) == 1 or name == "closing_balance"
+                    else f"{label} printed for each month of the statement adds up to {printed:,.2f}")
+            problems.append(f"{what} but the transactions read add up to {read:,.2f} - a transaction is "
+                            f"missing or misread")
     return problems
 
 
