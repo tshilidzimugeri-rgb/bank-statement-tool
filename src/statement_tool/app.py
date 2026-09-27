@@ -38,6 +38,7 @@ from statement_tool.excel_writer import (
     read_transactions,
     report_categories,
     restore_workbook,
+    statement_review_row,
     workbook_path_for,
 )
 from statement_tool.extract.document import parse_document
@@ -109,7 +110,7 @@ def restore_upload(name: str, data: bytes) -> None:
     st.info(f"Using your workbook **{target.stem}** ({len(read_transactions(target))} transactions).")
 
 
-def process_upload(name: str, data: bytes, password: str, reprocess: bool, accept_problems: bool) -> None:
+def process_upload(name: str, data: bytes, password: str, reprocess: bool) -> None:
     content_hash = sha256_of_bytes(data)
     source_id = f"upload:{content_hash}"
     with ProcessedStore(settings.processed_db) as store:
@@ -137,47 +138,57 @@ def process_upload(name: str, data: bytes, password: str, reprocess: bool, accep
         status.empty()
         if len(results) > 1:
             st.write(f"**{name}** holds {len(results)} statements - each is checked on its own:")
-        added = [add_statement(r, accept_problems) for r in results]
+        added = [add_statement(r) for r in results]
         if all(added):
             store.mark_processed(source_id, content_hash, name, results[0].client, results[0].bank_display_name,
                                  sum(len(r.transactions) for r in results))
-        elif any(added):
-            st.warning(f"**{name}**: {sum(added)} of {len(results)} statements added; the others were not "
-                       "(see above). Their months will show as gaps until they're added.")
 
 
-def add_statement(result, accept_problems: bool) -> bool:
-    """Checks one statement and writes it to its account's workbook. True if added."""
+def add_statement(result) -> bool:
+    """Writes one statement to its account's workbook and shows its status.
+    Every readable statement is added; anything that couldn't be confirmed is
+    marked REVIEW_REQUIRED rather than turned away. True if added."""
     name = result.source_file
     if not result.ok:
-        st.error(f"**{name}** could not be read: {result.error}")
-        return False
-    if result.problems and not accept_problems:
-        st.error(
-            f"**{name}** ({result.statement_period}) was NOT added - its numbers don't check out:\n\n"
-            + "\n".join(f"- {p}" for p in result.problems)
-            + "\n\nNothing was written. Compare with the PDF; if the PDF itself is right and you still "
-            "want it in, tick **Add even if checks fail** and upload it again."
-        )
+        st.error(f"**{name}** - no transactions could be read, so nothing was added. {result.error}")
         return False
 
     workbook = workbook_path_for(settings.output_dir, result.client, result.account_number, result.source_file)
     try:
-        written = append_transactions(workbook, result.transactions, categories)
+        written = append_transactions(workbook, result.transactions, categories,
+                                      statement=statement_review_row(result))
     except (WorkbookLockedError, MixedAccountsError) as exc:
         st.error(str(exc))
         return False
     st.session_state["last_workbook"] = str(workbook)
 
-    dupes = f", {written.skipped_duplicates} already in the workbook" if written.skipped_duplicates else ""
-    st.success(
-        f"**{name}** - {result.bank_display_name}, {result.statement_period}: "
-        f"{written.added} transactions added to **{workbook.stem}**{dupes}. All checks passed."
-        if not result.problems
-        else f"**{name}**: {written.added} transactions added{dupes} DESPITE failed checks - verify against the PDF."
-    )
+    report = result.report or {}
+    dupes = f" ({written.skipped_duplicates} were already in the workbook)" if written.skipped_duplicates else ""
+    review = [t for t in result.transactions if t.status != "APPROVED"]
+    headline = (f"**{name}** - {result.bank_display_name}, {result.statement_period}: "
+                f"{written.added} transactions added to **{workbook.stem}**{dupes}.")
+    figures = ""
+    if report.get("opening_balance") is not None:
+        figures = (f" Opening {report['opening_balance']:,.2f} + credits {report['total_credits']:,.2f} "
+                   f"- debits {report['total_debits']:,.2f} = {report['computed_closing']:,.2f}")
+        if report.get("printed_closing") is not None:
+            figures += f" (statement's closing balance: {report['printed_closing']:,.2f})"
+        figures += "."
+    if result.status == "APPROVED":
+        st.success(f"APPROVED - {headline} Every row is confirmed by the running balance and by a second, "
+                   f"independent reading.{figures}")
+    else:
+        issues = "".join(f"\n- {p}" for p in result.problems)
+        st.warning(f"REVIEW_REQUIRED - {headline} {len(review)} row(s) need checking against the statement "
+                   f"(highlighted in the workbook).{figures}{issues}")
+        if review:
+            st.dataframe(pd.DataFrame(
+                {"Date": t.date, "Description": t.description, "Debit": t.debit, "Credit": t.credit,
+                 "In/out not shown": t.unassigned, "Balance": t.balance, "Why": t.check,
+                 "As printed": t.evidence}
+                for t in review), hide_index=True)
     if result.warning:
-        st.warning(f"Check {name}: {result.warning}")
+        st.caption(f"{name}: {result.warning}")
     return True
 
 
@@ -198,7 +209,8 @@ with st.form("upload", clear_on_submit=True):
         )
         if HOSTED else []
     )
-    files = st.file_uploader("Bank statement PDFs", type="pdf", accept_multiple_files=True)
+    files = st.file_uploader("Bank statement PDFs (any bank, digital or scanned)", type="pdf",
+                             accept_multiple_files=True)
     password = st.text_input(
         "PDF password (only if the statements are locked)",
         type="password",
@@ -206,11 +218,6 @@ with st.form("upload", clear_on_submit=True):
     )
     reprocess = False if HOSTED else st.checkbox(
         "Process again even if already added (duplicates are still skipped)"
-    )
-    accept_problems = st.checkbox(
-        "Add even if checks fail",
-        help="Only after comparing with the PDF yourself. Normally a statement whose transactions don't add "
-        "up with its balances is refused.",
     )
     submitted = st.form_submit_button("Add to workbook", type="primary")
 
@@ -221,7 +228,7 @@ if submitted:
         st.warning("Choose at least one PDF first.")
     for f in files or []:
         with st.spinner(f"Reading {f.name}..."):
-            process_upload(f.name, f.getvalue(), password, reprocess, accept_problems)
+            process_upload(f.name, f.getvalue(), password, reprocess)
 
 books = list_workbooks(settings.output_dir)
 if not books:
@@ -315,6 +322,19 @@ with right:
         spend[r["Category"]] += r["Debit"] - r["Credit"]
     st.bar_chart(pd.Series(spend, name="Rand").sort_values(ascending=False), horizontal=True)
 
+if "Status" in df:
+    to_review = df[df["Status"] == "REVIEW_REQUIRED"]
+    if len(to_review):
+        st.warning(f"**{len(to_review)} row(s) in this account need checking** against the statements - they "
+                   "are highlighted on the Transactions sheet, and the Review sheet has each statement's "
+                   "reconciliation. Amounts whose direction isn't shown are in no total until confirmed.")
+        st.dataframe(to_review[[c for c in ("Date", "Description", "Debit", "Credit", "In/Out Not Shown",
+                                            "Balance", "Review Reason", "Evidence", "Source File") if c in df]],
+                     hide_index=True)
+    else:
+        st.success("Every row in this account is APPROVED: confirmed by the running balance and by a second, "
+                   "independent reading.")
+
 uncategorised = df[df["Category"].str.contains("uncategorised", na=False)]
 if len(uncategorised):
     st.warning(
@@ -332,4 +352,5 @@ if len(uncategorised):
             st.rerun()
 
 with st.expander(f"All {len(df)} transactions"):
-    st.dataframe(df[["Date", "Description", "Category", "VAT", "Debit", "Credit", "Balance"]], hide_index=True)
+    st.dataframe(df[[c for c in ("Date", "Description", "Category", "VAT", "Debit", "Credit", "Balance", "Status")
+                     if c in df]], hide_index=True)

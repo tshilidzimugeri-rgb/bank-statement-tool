@@ -19,6 +19,7 @@ from . import line_extract, text_extract
 from .amounts import parse_amount
 from .bank_detect import detect_bank, extract_statement_period, match_client
 from .dates import parse_date
+from .reading import REVIEW_REQUIRED, Reading, Row, assess, auto_reading, choose, compare, finalize
 
 
 class PdfPasswordError(Exception):
@@ -119,133 +120,123 @@ def parse_statement(
     else:
         text_extract_error = None
 
-    used_ocr = False
     full_text = text_result.full_text if text_result else first_page_text
-    warnings: list[str] = []
+    period = extract_statement_period(full_text, bank_layout, generic)
+    period_range = _period_range(period)
 
-    raw_transactions: list[tuple[str | None, str, float | None, float | None, float | None]] = []
-    # (date_raw, description, debit, credit, balance)
-
+    # Extraction 1: the layout-independent reader first, then the column and
+    # known-line readers; the one with the fewest unconfirmed rows is kept.
+    readings: list[Reading] = []
+    if text_result and not text_result.likely_scanned:
+        readings.append(auto_reading(text_result.full_text, period_range, full_text, bank_layout, generic))
     if text_result and text_result.rows:
-        for row in text_result.rows:
-            debit = credit = None
-            if bank_layout.amount_style == "signed":
-                amt = parse_amount(row.cells.get("amount"))
-                if amt is None:
-                    continue
-                if amt < 0:
-                    debit = abs(amt)
-                else:
-                    credit = amt
-            else:
-                debit = parse_amount(row.cells.get("debit"))
-                credit = parse_amount(row.cells.get("credit"))
-                if debit is None and credit is None:
-                    continue
-                # The column says which way the money moved; some banks also
-                # print debits as negative numbers, which mustn't flip it back.
-                debit = abs(debit) if debit is not None else None
-                credit = abs(credit) if credit is not None else None
+        table_rows = _table_rows(text_result.rows, bank_layout)
+        if table_rows:
+            readings.append(assess(table_rows, None, full_text, bank_layout, generic, period=period_range))
+    if text_result and not text_result.likely_scanned:
+        readings.extend(_line_readings(text_result.full_text, period, full_text, bank_layout, generic))
+    best = choose(readings)
 
-            balance = parse_amount(row.cells.get("balance")) if "balance" in row.cells else None
-            date_raw = row.cells.get("date", "")
-            date_iso = parse_date(date_raw)
-            description = (row.cells.get("description") or "").strip() or "(no description)"
-            raw_transactions.append((date_iso or date_raw, description, debit, credit, balance))
+    # Extraction 2: the same document through an independent PDF text engine.
+    if best is not None:
+        try:
+            second_text = text_extract.second_engine_text(pdf_path, password)
+            second = auto_reading(second_text, period_range, second_text, bank_layout, generic)
+        except Exception:
+            second = None
+        compare(best, second, "second PDF text engine")
 
-    problems: list[str] = []
-    if raw_transactions:
-        problems = _all_problems(raw_transactions, None, full_text, bank_layout, generic)
-    if (not raw_transactions or problems) and text_result and not text_result.likely_scanned:
-        # No usable table, or the table's numbers don't check out: read the
-        # transaction lines directly, and keep whichever reading checks out.
-        # The bank's own line format first, then every other known shape, so
-        # a bank without its own config (or a new layout from a known bank)
-        # is still read - but only a reading whose numbers check out wins.
-        period = extract_statement_period(full_text, bank_layout, generic)
-        best: tuple[list, list[str]] | None = None
-        for fmt in _line_formats_to_try(bank_layout):
-            line_rows, line_problems = _read_lines(text_result.full_text, fmt, period, full_text, bank_layout, generic)
-            if not line_rows:
+    return build_result(best, filename=filename, full_text=full_text, first_page_text=first_page_text,
+                        layout=bank_layout, generic=generic, account_number=account_number, period=period,
+                        client_rules=client_rules, sender=sender, subject=subject, interactive=interactive,
+                        used_ocr=False, error_hint=text_extract_error)
+
+
+def _table_rows(raw_rows, layout: BankLayout) -> list[Row]:
+    rows = []
+    for row in raw_rows:
+        debit = credit = None
+        if layout.amount_style == "signed":
+            amt = parse_amount(row.cells.get("amount"))
+            if amt is None:
                 continue
-            if not line_problems:
-                best = (line_rows, line_problems)
-                break
-            if best is None or len(line_problems) < len(best[1]):
-                best = (line_rows, line_problems)
-        if best and (not raw_transactions or not best[1]):
-            raw_transactions, problems = best
+            if amt < 0:
+                debit = abs(amt)
+            else:
+                credit = amt
+        else:
+            debit = parse_amount(row.cells.get("debit"))
+            credit = parse_amount(row.cells.get("credit"))
+            if debit is None and credit is None:
+                continue
+            # The column says which way the money moved; some banks also
+            # print debits as negative numbers, which mustn't flip it back.
+            debit = abs(debit) if debit is not None else None
+            credit = abs(credit) if credit is not None else None
+        balance = parse_amount(row.cells.get("balance")) if "balance" in row.cells else None
+        date_raw = row.cells.get("date", "")
+        description = (row.cells.get("description") or "").strip() or "(no description)"
+        evidence = " ".join(v for v in row.cells.values() if v)
+        rows.append(Row(parse_date(date_raw) or date_raw or None, description, debit, credit, balance,
+                        evidence=evidence))
+    return rows
 
-    statement_period = extract_statement_period(full_text, bank_layout, generic) or "Unknown"
-    client, client_unmapped = _resolve_client(
-        client_rules,
-        sender=sender,
-        subject=subject,
-        filename=filename,
-        first_page_text=first_page_text,
-        interactive=interactive,
-    )
+
+def _line_readings(text, period, full_text, layout, generic) -> list[Reading]:
+    """One reading per known line shape."""
+    out = []
+    period_end = _period_end(period)
+    for fmt in _line_formats_to_try(layout):
+        result = line_extract.extract(
+            text,
+            thousands=fmt.get("thousands", ","),
+            fee_column=bool(fmt.get("fee_column", False)),
+            dates_without_year=bool(fmt.get("dates_without_year", False)),
+            trailing_charges_column=bool(fmt.get("trailing_charges_column", False)),
+            unmarked_is_debit=bool(fmt.get("unmarked_is_debit", False)),
+        )
+        rows = []
+        for r in result.rows:
+            date_raw = _with_year(r.date_raw, period_end) if fmt.get("dates_without_year") else r.date_raw
+            rows.append(Row(parse_date(date_raw) or date_raw or None, r.description, r.debit, r.credit, r.balance,
+                            unassigned=r.unassigned, evidence=r.evidence))
+        if rows:
+            out.append(assess(rows, result.opening_balance, full_text, layout, generic,
+                              skipped_lines=result.skipped_lines, period=_period_range(period)))
+    return out
+
+
+def build_result(best: Reading | None, *, filename, full_text, first_page_text, layout, generic, account_number,
+                 period, client_rules, sender, subject, interactive, used_ocr, error_hint=None) -> StatementResult:
+    client, client_unmapped = _resolve_client(client_rules, sender=sender, subject=subject, filename=filename,
+                                              first_page_text=first_page_text, interactive=interactive)
+    base = dict(source_file=filename, bank_key=layout.key, bank_display_name=layout.display_name,
+                account_number=account_number, client=client, statement_period=period or "Unknown",
+                used_ocr=used_ocr)
+    if best is None:
+        reason = error_hint or ("no transactions could be found in it - it may not be a bank statement, "
+                                "or the scan is too unclear to read")
+        return StatementResult(ok=False, transactions=[], error=reason, status=REVIEW_REQUIRED, **base)
+
+    warnings: list[str] = []
     if client_unmapped:
         warnings.append("Client could not be matched from config/clients.yaml - add a rule or re-run interactively")
-    if not account_number and raw_transactions:
-        # Without it the statement can't be matched to its account's
-        # workbook, and statements must never be mixed.
-        problems.append(
-            "no account number found on the statement, so it can't be put with its account's other "
-            "statements - add an account_patterns entry for this bank in config/banks.yaml "
-            "(if added anyway, it gets a workbook of its own)"
-        )
+    if not account_number:
+        # Without it the statement can't be put with its account's other
+        # statements; it gets a workbook of its own so nothing is mixed.
+        best.problems.append("no account number found, so this statement was kept in a workbook of its own")
 
-    if not raw_transactions:
-        error_bits = []
-        if text_extract_error:
-            error_bits.append(f"text extraction error: {text_extract_error}")
-        if not error_bits:
-            error_bits.append(
-                "no transaction rows recognized - this bank's layout may need a new entry in config/banks.yaml"
-            )
-        return StatementResult(
-            source_file=filename,
-            ok=False,
-            transactions=[],
-            bank_key=bank_layout.key,
-            bank_display_name=bank_layout.display_name,
-            client=client,
-            statement_period=statement_period,
-            used_ocr=used_ocr,
-            error="; ".join(error_bits),
-        )
-
+    confidences, statuses, final = finalize(best, scanned=used_ocr)
     transactions = [
-        Transaction(
-            client=client,
-            bank=bank_layout.display_name,
-            statement_period=statement_period,
-            date=date_val or "",
-            description=description,
-            debit=debit,
-            credit=credit,
-            balance=balance,
-            source_file=filename,
-            ocr=used_ocr,
-            account=account_number or "",
-        )
-        for date_val, description, debit, credit, balance in raw_transactions
+        Transaction(client=client, bank=layout.display_name, statement_period=period or "Unknown",
+                    date=row.date or "", description=row.description, debit=row.debit, credit=row.credit,
+                    balance=row.balance, source_file=filename, ocr=used_ocr, account=account_number or "",
+                    check=row.check, evidence=row.evidence, confidence=confidence, status=status,
+                    unassigned=row.unassigned)
+        for row, confidence, status in zip(best.rows, confidences, statuses)
     ]
-
-    return StatementResult(
-        source_file=filename,
-        ok=True,
-        transactions=transactions,
-        bank_key=bank_layout.key,
-        bank_display_name=bank_layout.display_name,
-        account_number=account_number,
-        client=client,
-        statement_period=statement_period,
-        used_ocr=used_ocr,
-        warning="; ".join(warnings) if warnings else None,
-        problems=problems,
-    )
+    return StatementResult(ok=True, transactions=transactions, warning="; ".join(warnings) or None,
+                           problems=list(best.problems), status=final, report=dict(best.report), **base)
 
 
 # Line shapes seen so far (Standard Bank, Capitec, FNB, plain), tried in turn
@@ -294,6 +285,19 @@ def _read_lines(text, fmt, period, full_text, layout, generic):
             f"{len(result.skipped_lines)} line(s) look like transactions but couldn't be read (e.g. {shown})"
         )
     return rows, problems
+
+
+def _period_range(period: str | None) -> tuple[date, date] | None:
+    """First and last date of a statement period like "8 August 2026 to 10 September 2026"."""
+    if not period:
+        return None
+    parts = re.split(r"\s+to\s+", period, flags=re.IGNORECASE)
+    if len(parts) != 2:
+        return None
+    start, end = parse_date(parts[0]), parse_date(parts[1])
+    if not (start and end) or start > end:
+        return None
+    return date.fromisoformat(start), date.fromisoformat(end)
 
 
 def _period_end(period: str | None) -> date | None:
@@ -346,6 +350,7 @@ def _check_control_totals(
     full_text: str,
     layout: BankLayout,
     generic: BankLayout,
+    include_closing: bool = True,
 ) -> list[str]:
     """Compares what was read with totals the statement prints about
     itself - the only way to notice a missed first or last transaction.
@@ -363,6 +368,8 @@ def _check_control_totals(
         ("closing_balance", "closing balance", last_balance),
     ]
     for name, label, read in checks:
+        if name == "closing_balance" and not include_closing:
+            continue
         printed = _find_control_total(name, full_text, layout, generic)
         if printed is None or read is None:
             continue

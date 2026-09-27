@@ -111,3 +111,32 @@ def extract(pdf_path: Path, layout: BankLayout, password: str | None = None) -> 
         tables_found=tables_found,
         likely_scanned=likely_scanned,
     )
+
+
+def second_engine_text(pdf_path: Path, password: str | None = None) -> str:
+    return chr(10).join(second_engine_pages(pdf_path, password))
+
+
+def second_engine_pages(pdf_path: Path, password: str | None = None) -> list[str]:
+    """The document's text as read by a second, independent engine (MuPDF),
+    from each word's position on the page - used to cross-check the first
+    reading. Words are grouped into lines by their vertical position."""
+    import pymupdf
+
+    doc = pymupdf.open(pdf_path)
+    try:
+        if doc.needs_pass:
+            doc.authenticate(password or "")
+        pages = []
+        for page in doc:
+            lines: list[list] = []  # [centre_y, height, words]
+            for w in sorted(page.get_text("words"), key=lambda w: ((w[1] + w[3]) / 2, w[0])):
+                centre, height = (w[1] + w[3]) / 2, w[3] - w[1]
+                if lines and abs(lines[-1][0] - centre) <= max(1.5, 0.4 * min(height, lines[-1][1])):
+                    lines[-1][2].append(w)
+                else:
+                    lines.append([centre, height, [w]])
+            pages.append(chr(10).join(" ".join(x[4] for x in sorted(ws, key=lambda x: x[0])) for _, _, ws in lines))
+        return pages
+    finally:
+        doc.close()

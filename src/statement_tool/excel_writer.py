@@ -54,6 +54,10 @@ INCOME_SHEET = "Income Statement"
 CASHFLOW_SHEET = "Cash Flow"
 BREAKDOWN_SHEET = "Category Breakdown"
 CATEGORIES_SHEET = "Categories"
+REVIEW_SHEET = "Review"
+REVIEW_REQUIRED = "REVIEW_REQUIRED"
+REVIEW_FILL = PatternFill("solid", fgColor="FCE4D6")
+APPROVED_FILL = PatternFill("solid", fgColor="E2EFDA")
 VAT_SUMMARY_SHEET = "VAT Summary"
 # Per-month VAT sheets are named like "Jul 2026"; all are rebuilt each run.
 MONTH_SHEET_RE = re.compile(r"^[A-Z][a-z]{2} \d{4}$")
@@ -62,16 +66,18 @@ VAT_RATE = 0.15
 # per-client sheet, dropped if an older workbook still has it).
 GENERATED_SHEETS = (
     MONTHLY_SHEET, INCOME_SHEET, CASHFLOW_SHEET, BREAKDOWN_SHEET, VAT_SUMMARY_SHEET, CATEGORIES_SHEET, "Summary",
+    REVIEW_SHEET,
 )
 # Month sheets go between the reports and Transactions, in date order.
-REPORT_SHEET_ORDER = (MONTHLY_SHEET, INCOME_SHEET, CASHFLOW_SHEET, BREAKDOWN_SHEET, VAT_SUMMARY_SHEET)
+REPORT_SHEET_ORDER = (REVIEW_SHEET, MONTHLY_SHEET, INCOME_SHEET, CASHFLOW_SHEET, BREAKDOWN_SHEET, VAT_SUMMARY_SHEET)
 TRAILING_SHEET_ORDER = (TRANSACTIONS_SHEET, CATEGORIES_SHEET)
 TABLE_NAME = "TransactionsTable"
 
 HEADERS = [
     "Client",
     "Bank",
-    "Account",    "Statement Period",
+    "Account",
+    "Statement Period",
     "Date",
     "Month",
     "Description",
@@ -79,12 +85,17 @@ HEADERS = [
     "VAT",
     "Debit",
     "Credit",
+    "In/Out Not Shown",  # amounts the statement doesn't show as money in or out - in no total
     "Balance",
+    "Status",  # APPROVED or REVIEW_REQUIRED
+    "Confidence",
+    "Review Reason",
+    "Evidence",  # the line as read from the document
     "Source File",
     "OCR",
     "Row Key",
 ]
-WIDTHS = [18, 14, 13, 22, 12, 9, 48, 30, 6, 13, 13, 14, 28, 6, 4]
+WIDTHS = [18, 14, 13, 22, 12, 9, 48, 30, 6, 13, 13, 14, 14, 17, 11, 50, 70, 28, 6, 4]
 COL = {header: get_column_letter(i) for i, header in enumerate(HEADERS, start=1)}
 
 CURRENCY_FORMAT = '"R" #,##0.00;[Red]-"R" #,##0.00'
@@ -137,6 +148,7 @@ def _row_key(t: Transaction, occurrence: int = 0) -> str:
             f"{t.debit:.2f}" if t.debit is not None else "",
             f"{t.credit:.2f}" if t.credit is not None else "",
             f"{t.balance:.2f}" if t.balance is not None else "",
+            *([f"u{t.unassigned:.2f}"] if t.unassigned is not None else []),
             *([str(occurrence)] if occurrence else []),
         ]
     )
@@ -268,7 +280,12 @@ def _row_from_transaction(t: Transaction, key: str, categories: list[Category]) 
         "VAT": _vat_default(category, categories),
         "Debit": t.debit,
         "Credit": t.credit,
+        "In/Out Not Shown": t.unassigned,
         "Balance": t.balance,
+        "Status": t.status,
+        "Confidence": t.confidence,
+        "Review Reason": t.check,
+        "Evidence": t.evidence,
         "Source File": t.source_file,
         "OCR": "Yes" if t.ocr else "No",
         "Row Key": key,
@@ -276,8 +293,13 @@ def _row_from_transaction(t: Transaction, key: str, categories: list[Category]) 
 
 
 def append_transactions(
-    workbook_path: Path, transactions: list[Transaction], categories: list[Category] | None = None
+    workbook_path: Path,
+    transactions: list[Transaction],
+    categories: list[Category] | None = None,
+    statement: dict | None = None,
 ) -> WriteResult:
+    """statement: the statement's reconciliation report for the Review sheet
+    (see statement_review_row)."""
     categories = categories or []
     workbook_path.parent.mkdir(parents=True, exist_ok=True)
     wb = _open_workbook(workbook_path) if workbook_path.exists() else Workbook()
@@ -330,6 +352,10 @@ def append_transactions(
     # Stable sort: same-day rows keep their statement order.
     rows.sort(key=lambda r: (0, r["Date"]) if isinstance(r["Date"], date) else (1, date.max))
 
+    reviews = _read_reviews(wb)
+    if statement:
+        reviews = [r for r in reviews if r.get("Source File") != statement.get("Source File")] + [statement]
+
     for name in list(wb.sheetnames):
         if name in (TRANSACTIONS_SHEET, *GENERATED_SHEETS) or MONTH_SHEET_RE.match(name):
             wb.remove(wb[name])
@@ -338,6 +364,7 @@ def append_transactions(
             wb.remove(wb[leftover])
 
     _write_transactions_sheet(wb, rows)
+    _write_review_sheet(wb, reviews, len(rows))
     if rows:
         reported = report_categories(categories, rows)
         months = sorted({r["Month"] for r in rows if r["Month"]})
@@ -418,8 +445,12 @@ def _write_transactions_sheet(wb: Workbook, rows: list[dict]) -> None:
             cell = ws.cell(row=row_idx, column=col, value=row.get(header))
             if header == "Date" and isinstance(row.get(header), date):
                 cell.number_format = "yyyy-mm-dd"
-            elif header in ("Debit", "Credit", "Balance"):
+            elif header in ("Debit", "Credit", "Balance", "In/Out Not Shown"):
                 cell.number_format = CURRENCY_FORMAT
+            elif header == "Confidence":
+                cell.number_format = "0.00"
+            if row.get("Status") == REVIEW_REQUIRED:
+                cell.fill = REVIEW_FILL
 
     if rows:
         vat_choice = DataValidation(type="list", formula1='"Yes,No"', allow_blank=False)
@@ -584,9 +615,9 @@ def _write_monthly_summary(
     ws["A1"].font = TITLE
     header_row = 3
     labels = ["Month", "Opening Balance", "Money In", "Money Out", "Net", "Closing Balance",
-              "Check (should be 0)", "Transactions"]
+              "Check (should be 0)", "Transactions", "Rows to Review"]
     _write_header_row(ws, header_row, labels)
-    for col, width in enumerate([10, 16, 16, 16, 16, 16, 18, 13], start=1):
+    for col, width in enumerate([10, 16, 16, 16, 16, 16, 18, 13, 14], start=1):
         ws.column_dimensions[get_column_letter(col)].width = width
 
     r = header_row
@@ -602,6 +633,7 @@ def _write_monthly_summary(
         # balance; anything else means a missing or misread transaction.
         _money(ws, r, 7, f'=IF(OR(B{r}="",F{r}=""),"",ROUND(B{r}+C{r}-D{r}-F{r},2))')
         ws.cell(row=r, column=8, value=f"=COUNTIFS({month},$A{r})")
+        ws.cell(row=r, column=9, value=f'=COUNTIFS({month},$A{r},{_rng("Status", last)},"{REVIEW_REQUIRED}")')
     last_month_row = r
 
     total_row = last_month_row + 2
@@ -610,6 +642,7 @@ def _write_monthly_summary(
         letter = get_column_letter(col)
         _money(ws, total_row, col, f"=SUM({letter}{header_row + 1}:{letter}{last_month_row})", bold=True, total=True)
     ws.cell(row=total_row, column=8, value=f"=SUM(H{header_row + 1}:H{last_month_row})").font = BOLD
+    ws.cell(row=total_row, column=9, value=f"=SUM(I{header_row + 1}:I{last_month_row})").font = BOLD
     ws.freeze_panes = ws.cell(row=header_row + 1, column=1)
 
     if months:
@@ -749,7 +782,7 @@ def _write_category_breakdown(wb: Workbook, rows: list[dict], categories: list[C
 # --- Monthly income & expenses with VAT --------------------------------------------------
 
 VAT_SHEET_HEADERS = ["Date", "Reference", "Description", "Category", "VAT (Yes/No)", "Amount",
-                     "Amount excl VAT", f"VAT {VAT_RATE:.0%}"]
+                     "Amount excl VAT", f"VAT {VAT_RATE:.0%} (calculated)"]
 VAT_SHEET_WIDTHS = [11, 11, 48, 30, 12, 14, 16, 13]
 AMOUNT_COL, EXCL_COL, VAT_COL = 6, 7, 8  # F, G, H on each month sheet
 # Hidden helper columns: the transaction's Row Key, and the row it's on in
@@ -868,7 +901,8 @@ def _write_vat_summary(wb: Workbook, months: list[MonthVatTotals]) -> None:
     ws = wb.create_sheet(VAT_SUMMARY_SHEET)
     ws["A1"] = "Income, Expenses and VAT per Month"
     ws["A1"].font = TITLE
-    ws["A2"] = (f"VAT at {VAT_RATE:.0%}. VAT payable = VAT on income minus VAT on expenses; "
+    ws["A2"] = (f"VAT is CALCULATED at {VAT_RATE:.0%} as instructed - it is not read from the statements. "
+                f"VAT payable = VAT on income minus VAT on expenses; "
                 "negative means a refund. Set each transaction's VAT Yes/No on the Transactions sheet.")
     ws["A2"].font = Font(italic=True, color="666666")
     header_row = 4
@@ -916,3 +950,74 @@ def _write_categories_sheet(wb: Workbook, categories: list[Category]) -> None:
         ws.cell(row=r, column=1, value=category.name)
         ws.cell(row=r, column=2, value=category.type)
         ws.cell(row=r, column=3, value=", ".join(category.match) or "(anything not matched above)")
+
+
+# --- Review (one line per statement) ------------------------------------------------------
+
+REVIEW_COLUMNS = [
+    "Source File", "Statement Period", "Status", "Opening Balance", "Total Credits", "Total Debits",
+    "Net Movement", "Closing (computed)", "Closing (printed)", "Printed Credits", "Printed Debits",
+    "Rows Needing Review", "Issues",
+]
+REVIEW_WIDTHS = [34, 26, 17, 15, 15, 15, 15, 17, 16, 15, 15, 12, 90]
+REVIEW_HEADER_ROW = 5
+
+
+def statement_review_row(result) -> dict:
+    """A statement's line on the Review sheet, from its StatementResult."""
+    report = result.report or {}
+    return {
+        "Source File": result.source_file,
+        "Statement Period": result.statement_period,
+        "Status": result.status,
+        "Opening Balance": report.get("opening_balance"),
+        "Total Credits": report.get("total_credits"),
+        "Total Debits": report.get("total_debits"),
+        "Net Movement": report.get("net_movement"),
+        "Closing (computed)": report.get("computed_closing"),
+        "Closing (printed)": report.get("printed_closing"),
+        "Printed Credits": report.get("printed_total_credits"),
+        "Printed Debits": report.get("printed_total_debits"),
+        "Rows Needing Review": sum(1 for t in result.transactions if t.status == REVIEW_REQUIRED),
+        "Issues": "; ".join(result.problems) or "",
+    }
+
+
+def _read_reviews(wb: Workbook) -> list[dict]:
+    if REVIEW_SHEET not in wb.sheetnames:
+        return []
+    ws = wb[REVIEW_SHEET]
+    rows = list(ws.iter_rows(values_only=True))
+    header_at = next((i for i, r in enumerate(rows) if r and r[0] == "Source File"), None)
+    if header_at is None:
+        return []
+    headers = rows[header_at]
+    return [{h: v for h, v in zip(headers, r) if h} for r in rows[header_at + 1:] if r and r[0]]
+
+
+def _write_review_sheet(wb: Workbook, reviews: list[dict], transaction_count: int) -> None:
+    ws = wb.create_sheet(REVIEW_SHEET)
+    ws["A1"] = "Statement Review"
+    ws["A1"].font = TITLE
+    ws["A2"] = ("APPROVED: every row is confirmed by the statement's own running balance and by a second, "
+                "independent reading, and opening + credits - debits = closing. REVIEW_REQUIRED: something "
+                "couldn't be confirmed - see Issues, and the highlighted rows on the Transactions sheet.")
+    ws["A2"].font = Font(italic=True, color="666666")
+    ws["A3"] = "Transactions needing review:"
+    ws["A3"].font = BOLD
+    last = transaction_count + 1
+    ws["C3"] = f'=COUNTIF({_rng("Status", last)},"{REVIEW_REQUIRED}")' if transaction_count else 0
+    ws["C3"].font = BOLD
+    _write_header_row(ws, REVIEW_HEADER_ROW, REVIEW_COLUMNS)
+    for col, width in enumerate(REVIEW_WIDTHS, start=1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+    for r, review in enumerate(reviews, start=REVIEW_HEADER_ROW + 1):
+        for c, header in enumerate(REVIEW_COLUMNS, start=1):
+            cell = ws.cell(row=r, column=c, value=review.get(header))
+            if header in ("Opening Balance", "Total Credits", "Total Debits", "Net Movement", "Closing (computed)",
+                          "Closing (printed)", "Printed Credits", "Printed Debits"):
+                cell.number_format = CURRENCY_FORMAT
+        status_cell = ws.cell(row=r, column=REVIEW_COLUMNS.index("Status") + 1)
+        status_cell.fill = REVIEW_FILL if review.get("Status") == REVIEW_REQUIRED else APPROVED_FILL
+        status_cell.font = BOLD
+    ws.freeze_panes = ws.cell(row=REVIEW_HEADER_ROW + 1, column=2)

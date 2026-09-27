@@ -18,6 +18,15 @@ class Transaction:
     ocr: bool = False
     category: str = ""
     account: str = ""
+    # Why this row needs checking by a person ("" when the statement's own
+    # balances confirm it). Such rows are still added, highlighted.
+    check: str = ""
+    evidence: str = ""  # the line as read from the document
+    confidence: float = 1.0  # 1.00 verified; below 0.95 means REVIEW_REQUIRED
+    status: str = "APPROVED"  # APPROVED or REVIEW_REQUIRED
+    # An amount the document doesn't show as money in or out: kept here, out
+    # of the debit/credit totals, rather than guessed into one of them.
+    unassigned: float | None = None
 
 
 @dataclass
@@ -35,7 +44,9 @@ class StatementResult:
     used_ocr: bool = False
     error: str | None = None
     warning: str | None = None
-    # Checks that failed (rows that don't add up with the running balance,
-    # lines that couldn't be read, ...). Such a statement isn't trusted: it's
-    # only written to the workbook if the user explicitly overrides.
+    # Things about the statement as a whole that a person should check (its
+    # printed totals don't match, no account number, ...). The statement is
+    # still added; these are listed with it.
     problems: list[str] = field(default_factory=list)
+    status: str = "APPROVED"  # APPROVED only when every row is and everything reconciles
+    report: dict = field(default_factory=dict)  # opening, credits, debits, net, closing (computed and printed)

@@ -129,28 +129,28 @@ def test_capitec_rows_with_fee_space_thousands_and_vat_marker():
     assert result.skipped_lines == []  # the Uber summary/pending lines aren't transactions
     assert [(r.description, r.debit, r.credit, r.balance) for r in result.rows] == [
         ("Payment Received: Salary Other Income", None, 5000.00, 6000.00),
-        ("Banking App External PayShap Payment: J Doe (064 014 Digital Payments | 4653)", 2900.00, None, 3100.00),
+        # The balance between the payment and its fee isn't printed, so none is made up.
+        ("Banking App External PayShap Payment: J Doe (064 014 Digital Payments | 4653)", 2900.00, None, None),
         ("Fee: Banking App External PayShap Payment: J Doe (064 014 Digital Payments | 4653)", 2.00, None, 3098.00),
         ("Banking App Prepaid Purchase: Electricity Electricity", 11.00, None, 3087.00),
     ]
 
 
 def test_capitec_statement_checks_pass_and_catch_a_dropped_fee():
-    from statement_tool.extract.parser import _all_problems
-    from statement_tool.extract.dates import parse_date
+    from statement_tool.extract.reading import auto_reading
 
     layouts, generic = config_mod.load_bank_layouts(PROJECT_ROOT / "config" / "banks.yaml")
 
-    def problems(text):
-        r = line_extract.extract(text, thousands=" ", fee_column=True)
-        raw = [(parse_date(x.date_raw), x.description, x.debit, x.credit, x.balance) for x in r.rows]
-        return _all_problems(raw, r.opening_balance, text, layouts["capitec"], generic)
+    def review_rows(text):
+        reading = auto_reading(text, None, text, layouts["capitec"], generic)
+        return reading.problems + [r.check for r in reading.rows if r.check]
 
-    assert problems(CAPITEC_TEXT) == []
-    assert problems(CAPITEC_TEXT.replace("-2 900.00 -2.00 3 098.00", "-2 900.00 3 098.00"))
+    assert review_rows(CAPITEC_TEXT) == []
+    assert review_rows(CAPITEC_TEXT.replace("-2 900.00 -2.00 3 098.00", "-2 900.00 3 098.00"))
 
 
 def test_space_thousands_not_used_for_comma_banks():
     # "Unit 141 200.00" must not become 141 200.00 for a comma-thousands bank.
     result = line_extract.extract("01 Mar 26 UNIT 141 200.00 1,200.00\n")
-    assert [(r.description, r.credit) for r in result.rows] == [("UNIT 141", 200.00)]
+    # 200.00, not 141,200.00; with no opening balance, in or out isn't established.
+    assert [(r.description, r.unassigned) for r in result.rows] == [("UNIT 141", 200.00)]

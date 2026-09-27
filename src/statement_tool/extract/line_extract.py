@@ -29,6 +29,8 @@ _DATE = r"\d{1,2}\s+[A-Za-z]{3,9}\.?\s+\d{2,4}|\d{1,2}/\d{1,2}/\d{2,4}|\d{4}-\d{
 # starting with a number ("20 litres ...") can't be read as a year.
 _DATE_NO_YEAR = r"\d{1,2}/\d{1,2}/\d{2,4}|\d{4}-\d{2}-\d{2}|\d{1,2}\s+[A-Za-z]{3}(?![A-Za-z])"
 
+_CR_MARKER = re.compile(r"\d\.\d{2} ?Cr\b")
+_MARKER = re.compile(r"[-()]|cr|dr", re.IGNORECASE)
 _STARTS_WITH_DATE = re.compile(r"^\d{1,2}(?:\s+[A-Za-z]{3}|/\d{1,2})")
 
 # A continuation line longer than this is treated as page furniture (legal
@@ -83,6 +85,10 @@ class LineRow:
     debit: float | None
     credit: float | None
     balance: float | None
+    evidence: str = ""
+    # Direction not established by the balances or a printed marker: kept
+    # here instead of being guessed into debit or credit.
+    unassigned: float | None = None
 
 
 @dataclass
@@ -126,6 +132,10 @@ def extract(
     or balance without it is a debit / overdrawn, so it's read as negative.
     """
     p = _patterns(thousands, fee_column, dates_without_year, trailing_charges_column)
+    if unmarked_is_debit and not _CR_MARKER.search(full_text or ""):
+        # Only statements that mark credits "Cr" leave debits unmarked; on any
+        # other statement this would flip every amount and balance.
+        unmarked_is_debit = False
     rows: list[LineRow] = []
     skipped: list[str] = []
     opening_balance: float | None = None
@@ -168,11 +178,14 @@ def extract(
 
         magnitude = abs(amount)
         is_debit = amount < 0
+        # A printed marker (-, brackets, Cr/Dr, or the statement's "no Cr =
+        # debit" convention) establishes the direction; the balances can too.
+        established = unmarked_is_debit or bool(_MARKER.search(m.group("amount")))
         if prev_balance is not None and balance_before_fee is not None:
             if abs(prev_balance - magnitude - balance_before_fee) < _CENT:
-                is_debit = True
+                is_debit, established = True, True
             elif abs(prev_balance + magnitude - balance_before_fee) < _CENT:
-                is_debit = False
+                is_debit, established = False, True
             else:
                 unreconciled += 1
 
@@ -180,9 +193,12 @@ def extract(
             LineRow(
                 date_raw=m.group("date"),
                 description=description,
-                debit=magnitude if is_debit else None,
-                credit=None if is_debit else magnitude,
-                balance=round(balance_before_fee, 2) if balance_before_fee is not None else None,
+                debit=magnitude if is_debit and established else None,
+                credit=magnitude if not is_debit and established else None,
+                unassigned=None if established else magnitude,
+                # With a fee on the row, the balance between the two isn't printed.
+                balance=None if fee is not None else balance,
+                evidence=line,
             )
         )
         if fee is not None:
@@ -193,6 +209,7 @@ def extract(
                     debit=fee_amount,
                     credit=None,
                     balance=balance,
+                    evidence=line,
                 )
             )
         if balance is not None:

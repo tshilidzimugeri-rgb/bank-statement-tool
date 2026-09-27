@@ -98,7 +98,7 @@ def test_reports_created_in_order_with_statement_balances(tmp_path):
     )
     wb = load_workbook(book)
     assert wb.sheetnames == [
-        MONTHLY_SHEET, INCOME_SHEET, CASHFLOW_SHEET, "Category Breakdown", VAT_SUMMARY_SHEET,
+        "Review", MONTHLY_SHEET, INCOME_SHEET, CASHFLOW_SHEET, "Category Breakdown", VAT_SUMMARY_SHEET,
         "Mar 2026", "Apr 2026", TRANSACTIONS_SHEET, "Categories",
     ]
 
@@ -203,3 +203,41 @@ def test_hand_set_vat_flag_is_kept(tmp_path):
 
     append_transactions(book, [_t("2026-07-03", "OUTSURANCE", debit=115.0, balance=2.0)], VAT_CATEGORIES)
     assert _column(load_workbook(book)[TRANSACTIONS_SHEET], "VAT")[:2] == ["No", "Yes"]
+
+
+def test_review_status_evidence_and_statement_report_are_recorded(tmp_path):
+    from statement_tool.excel_writer import REVIEW_FILL, statement_review_row
+    from statement_tool.models import StatementResult
+
+    book = tmp_path / "out.xlsx"
+    ok = _t("2026-03-01", "RENT", credit=100.0, balance=100.0)
+    ok.evidence, ok.confidence = "01/03/2026 RENT 100.00 100.00", 1.0
+    unsure = _t("2026-03-02", "MYSTERY", balance=None)
+    unsure.unassigned, unsure.status, unsure.confidence = 40.0, "REVIEW_REQUIRED", 0.8
+    unsure.check = "the statement doesn't establish whether this money came in or went out"
+    result = StatementResult(source_file="a.pdf", ok=True, transactions=[ok, unsure], statement_period="Mar 2026",
+                             status="REVIEW_REQUIRED", problems=["something to check"],
+                             report={"opening_balance": 0.0, "total_credits": 100.0, "total_debits": 0.0,
+                                     "net_movement": 100.0, "computed_closing": 100.0})
+    append_transactions(book, [ok, unsure], CATEGORIES, statement=statement_review_row(result))
+
+    wb = load_workbook(book)
+    tx = wb[TRANSACTIONS_SHEET]
+    assert _column(tx, "Status")[:2] == ["APPROVED", "REVIEW_REQUIRED"]
+    assert _column(tx, "Evidence")[0] == "01/03/2026 RENT 100.00 100.00"
+    assert _column(tx, "In/Out Not Shown") == [40.0]  # kept, but in neither debit nor credit
+    assert tx[f"{COL['Description']}3"].fill.fgColor.rgb.endswith(REVIEW_FILL.fgColor.rgb[-6:])
+
+    review = wb["Review"]
+    header = [c.value for c in review[5]]
+    line = dict(zip(header, [c.value for c in review[6]]))
+    assert (line["Source File"], line["Status"], line["Rows Needing Review"], line["Issues"]) == (
+        "a.pdf", "REVIEW_REQUIRED", 1, "something to check")
+
+    # A later statement adds its own line; the first one is kept.
+    later = _t("2026-04-01", "RENT", credit=100.0, balance=200.0)
+    later.source_file = "b.pdf"
+    append_transactions(book, [later], CATEGORIES,
+                        statement={"Source File": "b.pdf", "Status": "APPROVED", "Issues": ""})
+    review = load_workbook(book)["Review"]
+    assert [review.cell(row=r, column=1).value for r in (6, 7)] == ["a.pdf", "b.pdf"]

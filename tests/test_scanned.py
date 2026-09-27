@@ -1,26 +1,25 @@
-"""Scanned statements: OCR clean-up, splitting a PDF into its statements, and
-repairs of misread figures that are only kept when the statement's own totals
-confirm them."""
+"""Scanned and multi-statement documents, and the extraction rules: printed
+values are never changed or guessed, disagreements between the two
+independent readings are flagged, and anything uncertain is
+REVIEW_REQUIRED."""
 from pathlib import Path
 
 from statement_tool import config as config_mod
-from statement_tool.extract.document import parse_statement_text, repair_from_balances, split_statements
+from statement_tool.extract.document import parse_statement_text, split_statements
 from statement_tool.extract.ocr_extract import clean_ocr_text
 
 PROJECT_ROOT = Path(__file__).parent.parent
 LAYOUTS, GENERIC = config_mod.load_bank_layouts(PROJECT_ROOT / "config" / "banks.yaml")
-FNB = LAYOUTS["fnb"]
 
 
-def test_clean_ocr_text_removes_scan_marks_but_keeps_amounts():
+def test_clean_ocr_text_removes_scan_marks_but_never_changes_amounts():
     raw = "(02 Dec |Rtc Credit Transfer 10,000.00Cr| 10,129.74Cr|\n17 Dec |FNB App Transfer 600,00 470.26 * 8.00)"
     assert clean_ocr_text(raw).split("\n") == [
         "02 Dec Rtc Credit Transfer 10,000.00Cr 10,129.74Cr",
-        "17 Dec FNB App Transfer 600.00 470.26 8.00",
+        "17 Dec FNB App Transfer 600,00 470.26 8.00",  # decimal comma left as read
     ]
     assert clean_ocr_text("Platinum Business Account : 62000000000") == "Platinum Business Account : 62000000000"
     assert clean_ocr_text("Balance 2,299.24Cr' 8.00") == "Balance 2,299.24Cr 8.00"
-    assert clean_ocr_text("1,472.60Cr) 10,000") == "1,472.60Cr 10,000"  # thousands untouched
 
 
 def test_pdf_split_into_statements_by_period():
@@ -46,45 +45,55 @@ No. Credit Transactions 1 500.00Cr
 No. Debit Transactions 3 1,100.00Dr"""
 
 
-def _read(text):
-    return parse_statement_text(text, "scan.pdf", layouts=LAYOUTS, generic=GENERIC, client_rules=[],
-                                sender=None, subject=None, interactive=False, used_ocr=True)
+def _read(text, second=STATEMENT):
+    return parse_statement_text(text, "scan.pdf", second_text=second, layouts=LAYOUTS, generic=GENERIC,
+                                client_rules=[], sender=None, subject=None, interactive=False, used_ocr=True)
 
 
-def test_clean_scan_reads_without_repairs():
+def test_clean_scan_read_twice_the_same_is_approved():
     result = _read(STATEMENT)
-    assert result.problems == [] and not (result.warning or "").startswith("scanned statement")
-    assert result.account_number == "62000000000"
-    assert [(t.date, t.debit, t.credit) for t in result.transactions][:2] == [
-        ("2026-03-02", None, 500.0), ("2026-03-05", 300.0, None)]
+    assert result.status == "APPROVED" and result.problems == []
+    assert {t.status for t in result.transactions} == {"APPROVED"}
+    assert {t.confidence for t in result.transactions} == {0.97}  # a scan: verified, but not quite 1.00
+    assert result.transactions[1].evidence == "05 Mar Payment To Supplier 300.00 1,200.00Cr"
+    assert result.report["computed_closing"] == 400.0 == result.report["printed_closing"]
 
 
-def test_misread_amount_repaired_and_confirmed_by_totals():
-    result = _read(STATEMENT.replace("Payment To Supplier 300.00", "Payment To Supplier 800.00"))
-    assert result.problems == []
-    assert result.transactions[1].debit == 300.0
-    assert "amount read as 800.00, is 300.00" in result.warning
+def test_misread_amount_is_kept_as_printed_and_flagged():
+    misread = STATEMENT.replace("Payment To Supplier 300.00", "Payment To Supplier 800.00")
+    result = _read(misread, second=misread)
+    supplier = result.transactions[1]
+    assert supplier.status == "REVIEW_REQUIRED"
+    assert supplier.debit is None or supplier.debit == 800.0  # never replaced by the 300 the balances imply
+    assert "printed as 800.00 but the balances give 300.00" in supplier.check
+    assert result.status == "REVIEW_REQUIRED"
 
 
-def test_misread_balance_repaired():
-    result = _read(STATEMENT.replace("700.00 500.00Cr", "700.00 900.00Cr"))
-    assert result.problems == []
-    assert result.transactions[2].balance == 500.0
+def test_rows_the_two_readings_disagree_on_are_flagged():
+    other = STATEMENT.replace("700.00 500.00Cr", "780.00 420.00Cr").replace("100.00 400.00Cr", "100.00 320.00Cr")
+    result = _read(STATEMENT, second=other)
+    flagged = [t.description for t in result.transactions if t.status == "REVIEW_REQUIRED"]
+    assert flagged == ["Payment To Wages", "#Monthly Account Fee"]
+    assert "other OCR pass" in result.transactions[2].check
 
 
-def test_two_misreads_on_one_row_are_not_guessed():
-    result = _read(STATEMENT.replace("300.00 1,200.00Cr", "800.00 1,900.00Cr"))
-    assert result.problems  # refused, not "repaired"
+def test_without_a_second_reading_nothing_is_approved():
+    result = _read(STATEMENT, second=None)
+    assert {t.status for t in result.transactions} == {"REVIEW_REQUIRED"}
 
 
-def test_no_repairs_without_printed_totals_to_confirm_them():
-    no_totals = "\n".join(l for l in STATEMENT.split("\n") if not l.startswith("No."))
-    result = _read(no_totals.replace("Payment To Supplier 300.00", "Payment To Supplier 800.00"))
-    assert result.problems
+def test_unreadable_date_is_left_empty_not_borrowed():
+    garbled = STATEMENT.replace("09 Mar Payment", "41 Mar Payment")
+    result = _read(garbled, second=garbled)
+    wages = result.transactions[2]
+    assert wages.date == "" and "date unreadable" in wages.check and wages.status == "REVIEW_REQUIRED"
+    assert wages.debit == 700.0  # the amount itself is confirmed by the balances
 
 
-def test_repair_that_breaks_the_printed_totals_is_rejected():
-    rows = [("2026-03-02", "A", None, 500.0, 1500.0), ("2026-03-05", "B", 999.0, None, 1200.0)]
-    text = "Closing Balance 1,200.00Cr\nNo. Credit Transactions 1 400.00Cr\nNo. Debit Transactions 1 300.00Dr"
-    repaired, notes = repair_from_balances(rows, 1000.0, text, FNB, GENERIC)
-    assert repaired is None and notes == []  # 999 -> 300 fits the balances, but money in doesn't match
+def test_direction_not_established_is_left_unassigned():
+    no_opening = "\n".join(l for l in STATEMENT.split("\n") if not l.startswith("Opening"))
+    no_opening = no_opening.replace("500.00Cr 1,500.00Cr", "500.00 1,500.00Cr")  # first amount unmarked
+    result = _read(no_opening, second=no_opening)
+    first = result.transactions[0]
+    assert first.unassigned == 500.0 and first.debit is None and first.credit is None
+    assert first.status == "REVIEW_REQUIRED"

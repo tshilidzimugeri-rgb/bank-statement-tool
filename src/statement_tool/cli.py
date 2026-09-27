@@ -14,7 +14,13 @@ from pathlib import Path
 
 from . import config as config_mod
 from .categorize import load_categories
-from .excel_writer import MixedAccountsError, WorkbookLockedError, append_transactions, workbook_path_for
+from .excel_writer import (
+    MixedAccountsError,
+    WorkbookLockedError,
+    append_transactions,
+    statement_review_row,
+    workbook_path_for,
+)
 from .extract.document import parse_document
 from .models import StatementResult
 from .store import ProcessedStore, sha256_of_bytes, sha256_of_file
@@ -41,18 +47,19 @@ def _print_summary(stats: RunStats, *, scanned_label: str) -> None:
     print(f"Transactions added:          {stats.transactions_added}")
 
     if stats.reviews:
-        print(f"\nFlagged for manual review ({len(stats.reviews)}):")
+        print(f"\nREVIEW_REQUIRED ({len(stats.reviews)}) - added, with rows to check highlighted:")
         for r in stats.reviews:
-            reason = r.warning or ("OCR extraction used" if r.used_ocr else "")
-            print(f"  - {r.source_file}: {reason}")
+            count = sum(1 for t in r.transactions if t.status != "APPROVED")
+            reasons = "; ".join(r.problems) or "see highlighted rows"
+            print(f"  - {r.source_file}: {count} row(s) to check; {reasons}")
 
     if stats.problems:
-        print(f"\nFAILED to parse ({len(stats.problems)}):")
+        print(f"\nNothing could be read from ({len(stats.problems)}):")
         for r in stats.problems:
             print(f"  - {r.source_file}: {r.error}")
 
     if not stats.reviews and not stats.problems:
-        print("\nNothing needs manual review.")
+        print("\nEverything is APPROVED - nothing needs checking.")
     print("=" * 60)
     for workbook in sorted(stats.workbooks):
         print(f"\nUpdated workbook: {workbook}")
@@ -67,7 +74,6 @@ def _process_one_pdf(
     store: ProcessedStore,
     stats: RunStats,
     interactive: bool,
-    allow_problems: bool = False,
     sender: str | None = None,
     subject: str | None = None,
 ) -> None:
@@ -83,7 +89,7 @@ def _process_one_pdf(
         interactive=interactive,
         progress=lambda message: print(f"  {message}"),
     )
-    added = [_add_statement(r, settings=settings, stats=stats, allow_problems=allow_problems) for r in results]
+    added = [_add_statement(r, settings=settings, stats=stats) for r in results]
     # Recorded as done only when every statement in it went in, so a rerun
     # retries the rest (the ones already added are skipped as duplicates).
     if all(added):
@@ -93,22 +99,17 @@ def _process_one_pdf(
         )
 
 
-def _add_statement(result: StatementResult, *, settings, stats: RunStats, allow_problems: bool) -> bool:
+def _add_statement(result: StatementResult, *, settings, stats: RunStats) -> bool:
+    """Every readable statement is added; anything that couldn't be confirmed
+    is marked REVIEW_REQUIRED (listed in the summary) rather than turned away."""
     if not result.ok:
-        stats.problems.append(result)
-        return False
-
-    if result.problems and not allow_problems:
-        result.error = (
-            "NOT added - numbers don't check out: " + "; ".join(result.problems)
-            + " (compare with the PDF; rerun with --allow-problems to add it anyway)"
-        )
         stats.problems.append(result)
         return False
 
     workbook = workbook_path_for(settings.output_dir, result.client, result.account_number, result.source_file)
     try:
-        write_result = append_transactions(workbook, result.transactions, load_categories(settings.categories_config))
+        write_result = append_transactions(workbook, result.transactions, load_categories(settings.categories_config),
+                                           statement=statement_review_row(result))
     except (WorkbookLockedError, MixedAccountsError) as exc:
         result.error = str(exc)
         stats.problems.append(result)
@@ -116,7 +117,7 @@ def _add_statement(result: StatementResult, *, settings, stats: RunStats, allow_
     stats.transactions_added += write_result.added
     stats.processed += 1
     stats.workbooks.add(workbook)
-    if result.used_ocr or result.warning:
+    if result.status != "APPROVED":
         stats.reviews.append(result)
     return True
 
@@ -150,7 +151,6 @@ def cmd_process_folder(args: argparse.Namespace) -> int:
                 content_hash=content_hash,
                 layouts=layouts, generic=generic, client_rules=client_rules, settings=settings,
                 store=store, stats=stats, interactive=not args.no_interactive,
-                allow_problems=args.allow_problems,
             )
 
     _print_summary(stats, scanned_label="PDFs scanned")
@@ -200,7 +200,6 @@ def cmd_fetch_email(args: argparse.Namespace) -> int:
                     content_hash=content_hash,
                     layouts=layouts, generic=generic, client_rules=client_rules, settings=settings,
                     store=store, stats=stats, interactive=not args.no_interactive,
-                    allow_problems=args.allow_problems,
                     sender=info.sender, subject=info.subject,
                 )
 
@@ -216,10 +215,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_folder.add_argument("--folder", help="Folder of PDFs (default: data/incoming_pdfs)")
     p_folder.add_argument("--reprocess", action="store_true", help="Reprocess files even if already recorded")
     p_folder.add_argument(
-        "--allow-problems", action="store_true",
-        help="Add statements even if their transactions don't add up with their balances",
-    )
-    p_folder.add_argument(
         "--no-interactive", action="store_true",
         help="Never prompt for client mapping; unmapped statements are labeled UNMAPPED_CLIENT",
     )
@@ -228,10 +223,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_email = sub.add_parser("fetch-email", help="Search Gmail for statement PDFs and process the new ones")
     p_email.add_argument("--days", type=int, help="Lookback window in days (default: GMAIL_LOOKBACK_DAYS or 30)")
     p_email.add_argument("--reprocess", action="store_true", help="Reprocess attachments even if already recorded")
-    p_email.add_argument(
-        "--allow-problems", action="store_true",
-        help="Add statements even if their transactions don't add up with their balances",
-    )
     p_email.add_argument(
         "--no-interactive", action="store_true",
         help="Never prompt for client mapping; unmapped statements are labeled UNMAPPED_CLIENT",

@@ -93,9 +93,6 @@ def ocr_pages(
 _TABLE_LINES = re.compile(r"[|\[\]{}]")
 # "1,472.60Cr)" / "129.74 Cr]" - junk straight after a Cr/Dr marker.
 _MARKER_JUNK = re.compile(r"(\d\.\d{2})\s?(Cr|Dr)[)\]}|!:;,.]+")
-# "600,00" - a decimal comma misread (or printed) where a point belongs; a
-# thousands group always has three digits, so "10,000" is left alone.
-_DECIMAL_COMMA = re.compile(r"(?<![\d,])(\d{1,3}(?:,\d{3})*),(\d{2})(?![\d,])")
 
 
 # "15.00)" - a closing bracket read off a table rule after an amount.
@@ -110,14 +107,13 @@ _LONE_MARKS = re.compile(r"(?<=\s)[^\w\s#():-]{1,3}(?=\s|$)")
 
 def clean_ocr_text(text: str) -> str:
     """Removes what scanning adds: table rules read as | [ ] { }, stray marks
-    between columns, and junk or decimal commas around amounts. Amounts
-    themselves are never guessed at - anything still misread is caught by the
+    between columns, and junk around amounts. Amounts are never changed
+    (not even a decimal comma) and never guessed at - anything still misread is caught by the
     balance checks.
     """
     text = text.replace("\ufffd", " ")
     text = _MARKER_JUNK.sub(r"\1\2", text)
     text = _TABLE_LINES.sub(" ", text)
-    text = _DECIMAL_COMMA.sub(r"\1.\2", text)
     text = _AMOUNT_BRACKET.sub(r"\1", text)
     text = _AMOUNT_QUOTES.sub(r"\1", text)
     text = _LEADING_JUNK.sub("", text)

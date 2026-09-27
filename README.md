@@ -50,19 +50,13 @@ Scanned (photo / image-only) statements are read with **Tesseract OCR**:
 - **Online (Streamlit Cloud):** installed automatically from `packages.txt`.
 
 Each page is turned the right way up (scanners often feed pages upside
-down), read, and cleaned of what scanning adds (table lines read as `|`,
-stray marks, decimal commas). A PDF holding several statements - e.g. a year
-of monthly statements scanned together - is split per statement, and each
-is checked on its own against its opening/closing balance and printed
-totals.
-
-OCR misreads the odd digit. A single misread figure on a row can be
-corrected from the running balance, but the correction is only kept when
-the whole statement then matches the bank's printed totals and closing
-balance exactly - a wrong correction can't do that. Everything corrected
-is listed in the upload message. A statement that still doesn't add up is
-refused, like any other; better scans (straight, 300 dpi, not faded) read
-best.
+down), read twice independently (two OCR passes at different resolutions),
+and cleaned only of what scanning adds (table lines read as `|`, stray
+marks) - amounts are never changed, not even a decimal comma. A PDF holding
+several statements (e.g. a year of monthly statements scanned together) is
+split per statement, and each is checked on its own. Any row the two OCR
+passes disagree on, or that doesn't add up, is marked REVIEW_REQUIRED.
+Better scans (straight, 300 dpi, not faded) read best.
 
 ## Configuration
 
@@ -156,26 +150,40 @@ that workbook along with the new PDFs, then **download the updated
 workbook** before closing the page. `packages.txt` installs the OCR tools
 there, so scanned statements work online too.
 
-## Safety checks
+## How statements are checked
 
-Every statement is checked before anything is written, using the figures
-the bank prints itself:
+The reader works on **any bank's layout**, without per-bank setup: it uses
+the arithmetic every statement has - each balance is the previous balance
+plus or minus the amount - to tell which number is the amount, which the
+balance, and whether money came in or went out. It is tested on hundreds of
+made-up statements in layouts no bank config describes
+(`tests/fixtures/synthetic.py`).
 
-- **Running balance:** each transaction's balance must equal the previous
-  balance plus its credit minus its debit. A misread amount, a debit read
-  as a credit, or a skipped row breaks this.
-- **Statement totals:** where the statement prints its own totals (Standard
-  Bank's "Payments"/"Deposits" summary, or any "Closing balance" line), the
-  transactions read must add up to them exactly. This catches a missing
-  first or last row.
-- **Dates and unreadable lines:** a date that can't be read, or a line that
-  looks like a transaction but doesn't match the expected shape, is flagged
-  rather than dropped.
+Rules it follows:
 
-A statement that fails any check is **not added** - the upload page (or the
-command-line run summary) says exactly what didn't add up. Once you've
-compared it with the PDF yourself, tick **Add even if checks fail** (or use
-`--allow-problems`) to add it anyway.
+- **Nothing is guessed, changed or filled in.** Amounts, dates,
+  descriptions and balances are kept exactly as printed. A value the
+  document doesn't establish is left empty - an unreadable date stays blank;
+  an amount whose direction isn't shown goes in the **In/Out Not Shown**
+  column, in no total - and the row is marked **REVIEW_REQUIRED** with the
+  reason.
+- **Two independent extractions.** Digital PDFs are read by two separate
+  PDF text engines (pdfminer and MuPDF), scans by two OCR passes; any row
+  they disagree on is REVIEW_REQUIRED.
+- **Validation:** every row needs a date and an amount; each balance must
+  follow from the previous one; opening + credits - debits = closing; the
+  statement's printed totals and closing balance must match; duplicates,
+  impossible dates and dates out of order are flagged. If two different
+  readings of a row both add up, it's flagged as ambiguous.
+- **Status and evidence:** each row gets a Status (APPROVED /
+  REVIEW_REQUIRED), a Confidence (1.00 verified; 0.97 verified from a scan;
+  0.80 needs review) and its Evidence - the line as printed. Each statement
+  gets a line on the **Review** sheet: opening, credits, debits, net
+  movement, computed and printed closing balance, printed totals, rows
+  needing review, issues, and its final status - APPROVED only when every
+  row is and everything reconciles.
+- **Nobody is turned away.** Every readable statement is added; anything
+  unconfirmed is highlighted for a person to check, not dropped.
 
 The workbook itself is protected too:
 
@@ -192,7 +200,8 @@ The workbook itself is protected too:
 What the checks can't know: whether a transaction is in the right
 **category** or has the right **VAT** setting - those are judgement calls,
 so glance at the "uncategorised" list on the upload page and at the VAT
-column.
+column. VAT is **calculated** at 15% (as instructed), never read from the
+statements, and labelled as calculated.
 
 ## The workbook
 

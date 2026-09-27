@@ -51,6 +51,7 @@ def _statement_pdf(path: Path, rows: list[tuple], footer: str | None = None, acc
         Paragraph("First National Bank", styles["Title"]),
         *([Paragraph("Account Number: 6205 1234 567", styles["Normal"])] if account else []),
         Paragraph("Statement Period: 01 Mar 2026 to 31 Mar 2026", styles["Normal"]),
+        Paragraph("Opening Balance: 1,000.00", styles["Normal"]),
         Table([["Date", "Description", "Debit", "Credit", "Balance"], *rows]),
     ]
     if footer:
@@ -69,7 +70,7 @@ def _parse(path: Path):
 GOOD_ROWS = [
     ("02/03/2026", "Salary", "", "5,000.00", "6,000.00"),
     ("05/03/2026", "Insurance", "-1,200.00", "", "4,800.00"),  # debit printed negative
-    ("09/03/2026", "Groceries", "300.00", "", "4,500.00"),
+    ("09/03/2026", "Groceries", "-300.00", "", "4,500.00"),  # this statement prints every debit negative
 ]
 
 
@@ -79,21 +80,28 @@ def test_clean_statement_has_no_problems_and_negative_debit_stays_a_debit(tmp_pa
     assert [(t.debit, t.credit) for t in result.transactions] == [(None, 5000.0), (1200.0, None), (300.0, None)]
 
 
-def test_row_that_doesnt_add_up_is_a_problem(tmp_path):
-    rows = [*GOOD_ROWS[:2], ("09/03/2026", "Groceries", "30.00", "", "4,500.00")]  # 300 misread as 30
+def test_row_that_doesnt_add_up_is_added_and_marked_for_checking(tmp_path):
+    rows = [*GOOD_ROWS[:2], ("09/03/2026", "Groceries", "-30.00", "", "4,500.00")]  # 300 misread as 30
     result = _parse(_statement_pdf(tmp_path / "s.pdf", rows))
-    assert any("don't add up with the running balance" in p for p in result.problems)
+    assert result.ok and len(result.transactions) == 3  # nothing turned away
+    groceries = result.transactions[2]
+    assert groceries.check  # but highlighted for a person to check
+    assert [t.check for t in result.transactions[:2]] == ["", ""]  # the rows that add up aren't
 
 
 def test_missing_last_row_caught_by_printed_closing_balance(tmp_path):
     result = _parse(_statement_pdf(tmp_path / "s.pdf", GOOD_ROWS[:2], footer="Closing Balance: 4,500.00"))
-    assert any("closing balance on the statement is 4,500.00" in p for p in result.problems)
+    assert any("closing balance is 4,500.00 but the last balance read is 4,800.00" in p for p in result.problems)
+    assert result.status == "REVIEW_REQUIRED"
 
 
-def test_unreadable_date_is_a_problem(tmp_path):
-    rows = [*GOOD_ROWS[:2], ("31/02/2026", "Groceries", "300.00", "", "4,500.00")]  # no 31 February
+def test_unreadable_date_is_left_empty_and_marked(tmp_path):
+    rows = [*GOOD_ROWS[:2], ("31/02/2026", "Groceries", "-300.00", "", "4,500.00")]  # no 31 February
     result = _parse(_statement_pdf(tmp_path / "s.pdf", rows))
-    assert any("date that couldn't be read" in p for p in result.problems)
+    groceries = result.transactions[2]
+    assert groceries.date == "" and "date unreadable" in groceries.check  # never borrowed from another row
+    assert groceries.status == "REVIEW_REQUIRED"
+    assert groceries.debit == 300.0  # the amount itself still adds up
 
 
 def test_statement_without_balances_is_a_problem(tmp_path):

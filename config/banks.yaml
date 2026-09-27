@@ -182,6 +182,11 @@ generic:
   # Tried for every bank after its own control_totals.
   control_totals:
     closing_balance: ["closing balance[:\\s]+r?\\s?(-?\\d{1,3}(?:[ ,]\\d{3})*\\.\\d{2}(?:\\s?(?:cr|dr)\\b)?)"]
+    # "Total debits 12,345.67" / "Total credits ..." and common wordings.
+    total_debits:
+      - "total (?:debits|withdrawals|payments|money out)[:\\s]+-?r?\\s?(\\d{1,3}(?:[ ,]\\d{3})+\\.\\d{2}|\\d+\\.\\d{2})"
+    total_credits:
+      - "total (?:credits|deposits|receipts|money in)[:\\s]+r?\\s?(\\d{1,3}(?:[ ,]\\d{3})+\\.\\d{2}|\\d+\\.\\d{2})"
   amount_style: split
   columns:
     date: ["date", "transaction date", "posting date"]
