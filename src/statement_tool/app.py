@@ -27,6 +27,17 @@ _SRC = Path(__file__).resolve().parents[1]
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
+# After an update the server can keep the previous version of this package's
+# modules loaded while running the new page, which then can't find what it
+# imports. Whenever the code on disk has changed, import it afresh.
+_CODE_STAMP = max(p.stat().st_mtime_ns for p in (_SRC / "statement_tool").rglob("*.py"))
+if "statement_tool" in sys.modules and getattr(sys.modules["statement_tool"], "code_stamp", None) != _CODE_STAMP:
+    for _name in [n for n in sys.modules if n == "statement_tool" or n.startswith("statement_tool.")]:
+        del sys.modules[_name]
+import statement_tool  # noqa: E402
+
+statement_tool.code_stamp = _CODE_STAMP
+
 from statement_tool import config as config_mod  # noqa: E402
 from statement_tool.categorize import load_categories
 from statement_tool.checks import workbook_gaps
