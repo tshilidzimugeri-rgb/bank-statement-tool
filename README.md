@@ -145,9 +145,11 @@ The same page can be hosted so it opens from any phone or computer:
 
 Online, the page won't open without `APP_PASSWORD`, and it keeps nothing
 between visits: each visit works in its own temporary folder, which is
-gone when you leave. To add statements to an existing workbook, upload
-that workbook along with the new PDFs, then **download the updated
-workbook** before closing the page. `packages.txt` installs the OCR tools
+gone when you leave. Each upload makes a new workbook from just the files
+uploaded that time - statements added earlier in the visit aren't carried
+over. To add statements to an existing workbook, upload that workbook
+along with the new PDFs, then **download the updated workbook** before
+closing the page. `packages.txt` installs the OCR tools
 there, so scanned statements work online too.
 
 ## How statements are checked

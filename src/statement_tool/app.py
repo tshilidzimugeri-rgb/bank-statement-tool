@@ -13,6 +13,7 @@ from __future__ import annotations
 import dataclasses
 import hmac
 import os
+import shutil
 import sys
 import tempfile
 from collections import defaultdict
@@ -205,8 +206,9 @@ def add_statement(result) -> bool:
 
 st.title("Bank Statement Tool")
 if HOSTED:
-    st.info("Online: nothing is kept after you leave. To add to an existing workbook, upload it too, "
-            "and download the updated workbook before closing the page.")
+    st.info("Online: each upload makes a new workbook from just the files you upload that time. "
+            "To add to a workbook you downloaded earlier, upload it in the top box together with the new "
+            "statements, and download the updated workbook before closing the page.")
 else:
     st.caption(f"Workbooks (one per bank account): `{settings.output_dir}`")
 
@@ -233,6 +235,13 @@ with st.form("upload", clear_on_submit=True):
     submitted = st.form_submit_button("Add to workbook", type="primary")
 
 if submitted:
+    if HOSTED and (files or existing):
+        # Online, each upload starts from nothing: the workbook holds only the
+        # statements (and any workbook) uploaded this time, not ones added
+        # earlier in the same visit.
+        shutil.rmtree(settings.output_dir, ignore_errors=True)
+        shutil.rmtree(settings.uploads_dir, ignore_errors=True)
+        st.session_state.pop("last_workbook", None)
     for w in existing or []:
         restore_upload(w.name, w.getvalue())
     if not files and not existing:
