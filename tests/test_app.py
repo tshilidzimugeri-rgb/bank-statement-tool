@@ -4,6 +4,7 @@ import sys
 from datetime import timedelta
 from pathlib import Path
 
+import pytest
 from streamlit.testing.v1 import AppTest
 
 sys.path.insert(0, str(Path(__file__).parent / "fixtures"))
@@ -12,6 +13,19 @@ from synthetic import build, generate, render_pdf  # noqa: E402
 from statement_tool.excel_writer import read_transactions  # noqa: E402
 
 APP = Path(__file__).parent.parent / "src" / "statement_tool" / "app.py"
+
+
+@pytest.fixture(autouse=True)
+def _restore_package_modules():
+    """The page imports this package afresh when it starts; put back the
+    modules the other tests already hold, or their classes stop matching."""
+    def ours():
+        return [n for n in sys.modules if n == "statement_tool" or n.startswith("statement_tool.")]
+    saved = {n: sys.modules[n] for n in ours()}
+    yield
+    for n in ours():
+        del sys.modules[n]
+    sys.modules.update(saved)
 
 
 def _two_statements_of_one_account(tmp_path):
