@@ -72,6 +72,21 @@ recategorise spending, add a client, or add a straightforward new bank:
   category straight into a transaction's Category cell in Excel - hand
   edits are kept on every later run.
 
+  **Learnt categories.** What no rule matches gets a *suggested* category
+  when it clearly resembles transactions whose category you typed, with
+  money going the same way, and has their most distinctive word, usually
+  the shop or person paid. For example, give one "SASOL THERESA" purchase
+  the category Fuel, and the other Sasol Theresa purchases get Fuel
+  suggested; how a payment was made ("DEBIT CARD PURCHASE", "PAYSHAP PAY
+  BY PROXY") and its month never count. It learns only from your own
+  categories, not the rules' (the rules already cover what they match). It
+  learns from the workbook itself each time (nothing is stored or sent
+  anywhere), so every category you type teaches it. Suggestions only set the Category, never an
+  amount, and the **Category Source** column says which set each one:
+  `Rule`, `Set by you`, or `Suggested - like N transactions you
+  categorised, e.g. "..."`. Type over a wrong suggestion and it's kept as yours. A rule
+  added later replaces a suggestion, but never a category you typed.
+
 - **`config/clients.yaml`** - maps a client name to the sender/subject/
   filename/statement-text substrings that identify their statements. If a
   statement matches nothing, the tool asks for the client name interactively
@@ -210,8 +225,8 @@ The workbook itself is protected too:
 
 What the checks can't know: whether a transaction is in the right
 **category** or has the right **VAT** setting - those are judgement calls,
-so glance at the "uncategorised" list on the upload page and at the VAT
-column. VAT is **calculated** at 15% (as instructed), never read from the
+so glance at the "uncategorised" and "suggested" lists on the upload page
+and at the VAT column. VAT is **calculated** at 15% (as instructed), never read from the
 statements, and labelled as calculated.
 
 ## The workbook
@@ -338,6 +353,7 @@ src/statement_tool/
   store.py                  # SQLite "already processed" tracking
   app.py                    # upload page (Streamlit) - started by run_app.bat
   categorize.py              # assigns categories from config/categories.yaml
+  learn.py                   # suggests categories learnt from categorised transactions
   excel_writer.py            # workbook: transactions + report sheets
   gmail_client.py            # OAuth login, search, attachment download
   extract/

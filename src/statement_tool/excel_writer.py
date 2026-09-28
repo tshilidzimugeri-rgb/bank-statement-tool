@@ -12,7 +12,11 @@ Design choices, since they matter for correctness:
   same dates) never double-count.
 - Each transaction gets a Category (config/categories.yaml). A category
   typed over by hand in the sheet is kept on every later run; uncategorised
-  rows are re-checked against the rules each run.
+  rows are re-checked against the rules each run. What the rules still
+  can't place gets a category learnt from the workbook's categorised rows
+  (learn.py), when similar ones clearly agree. "Category Source" says which
+  of these set each category; a suggestion is re-made each run until a
+  person types over it.
 - The reports (Monthly Summary, Income Statement, Cash Flow, Category
   Breakdown) are rebuilt every run with SUMIFS/COUNTIFS formulas over the
   Transactions sheet, so editing a transaction or its category recalculates
@@ -46,6 +50,7 @@ from openpyxl.worksheet.table import Table, TableStyleInfo
 from openpyxl.worksheet.worksheet import Worksheet
 
 from .categorize import UNCATEGORISED_EXPENSE, UNCATEGORISED_INCOME, Category, categorize, with_fallbacks
+from .learn import CategoryLearner
 from .models import Transaction
 
 TRANSACTIONS_SHEET = "Transactions"
@@ -82,6 +87,7 @@ HEADERS = [
     "Month",
     "Description",
     "Category",
+    "Category Source",  # Rule, Set by you, or Suggested (learnt from similar rows)
     "VAT",
     "Debit",
     "Credit",
@@ -94,8 +100,13 @@ HEADERS = [
     "Source File",
     "OCR",
     "Row Key",
+    # Hidden: the category last suggested, so a person typing over it is told
+    # apart from the suggestion itself.
+    "Suggested Category",
 ]
-WIDTHS = [18, 14, 13, 22, 12, 9, 48, 30, 6, 13, 13, 14, 14, 17, 11, 50, 70, 28, 6, 4]
+WIDTHS = [18, 14, 13, 22, 12, 9, 48, 30, 26, 6, 13, 13, 14, 14, 17, 11, 50, 70, 28, 6, 4, 4]
+CATEGORY_BY_RULE = "Rule"
+CATEGORY_BY_HAND = "Set by you"
 COL = {header: get_column_letter(i) for i, header in enumerate(HEADERS, start=1)}
 
 CURRENCY_FORMAT = '"R" #,##0.00;[Red]-"R" #,##0.00'
@@ -265,6 +276,10 @@ def _vat_default(category: str, categories: list[Category]) -> str:
     return "No"
 
 
+def _uncategorised(category) -> bool:
+    return category in (None, "", UNCATEGORISED_INCOME, UNCATEGORISED_EXPENSE)
+
+
 def _row_from_transaction(t: Transaction, key: str, categories: list[Category]) -> dict:
     when = _as_date(t.date)
     category = t.category or categorize(t.description, bool(t.credit), categories)
@@ -277,6 +292,7 @@ def _row_from_transaction(t: Transaction, key: str, categories: list[Category]) 
         "Month": _month_of(when),
         "Description": t.description,
         "Category": category,
+        "Category Source": None if _uncategorised(category) else CATEGORY_BY_HAND if t.category else CATEGORY_BY_RULE,
         "VAT": _vat_default(category, categories),
         "Debit": t.debit,
         "Credit": t.credit,
@@ -321,18 +337,22 @@ def append_transactions(
             f"{workbook_path.name} holds account {', '.join(sorted(existing_accounts)) or '(none)'}; "
             f"refusing to add account {', '.join(sorted(new_accounts - existing_accounts)) or '(none)'} to it"
         )
+    was = {}  # each row's category as it was, to tell which changed
     for row in rows:
         row["Date"] = _as_date(row.get("Date"))
         row["Month"] = _month_of(row["Date"])
+        was[row["Row Key"]] = old = row.get("Category")
+        by_rules = categorize(row.get("Description") or "", bool(row.get("Credit")), categories)
+        if row.get("Suggested Category") and old == row["Suggested Category"]:
+            row["Category"] = None  # still the suggestion: rules and learning get a fresh go
         # Uncategorised rows get another go against the current rules, so a
         # rule added later applies to them; any other category is left alone.
-        if row.get("Category") in (None, "", UNCATEGORISED_INCOME, UNCATEGORISED_EXPENSE):
-            old = row.get("Category")
-            row["Category"] = categorize(row.get("Description") or "", bool(row.get("Credit")), categories)
-            if row["Category"] != old:
-                row["VAT"] = None  # newly categorised: take the new category's default
-        if row.get("VAT") not in ("Yes", "No"):
-            row["VAT"] = _vat_default(row["Category"], categories)
+        if _uncategorised(row.get("Category")):
+            row["Category"] = by_rules
+            row["Category Source"] = None if _uncategorised(by_rules) else CATEGORY_BY_RULE
+        else:
+            row["Category Source"] = CATEGORY_BY_RULE if row["Category"] == by_rules else CATEGORY_BY_HAND
+        row["Suggested Category"] = None
     keys = {row["Row Key"] for row in rows}
 
     added = skipped = 0
@@ -347,7 +367,15 @@ def append_transactions(
             continue
         keys.add(key)
         rows.append(_row_from_transaction(t, key, categories))
+        was[key] = rows[-1]["Category"]
         added += 1
+
+    _suggest_categories(rows)
+    for row in rows:
+        if row["Category"] != was[row["Row Key"]]:
+            row["VAT"] = None  # newly categorised: take the new category's default
+        if row.get("VAT") not in ("Yes", "No"):
+            row["VAT"] = _vat_default(row["Category"], categories)
 
     # Stable sort: same-day rows keep their statement order.
     rows.sort(key=lambda r: (0, r["Date"]) if isinstance(r["Date"], date) else (1, date.max))
@@ -384,6 +412,25 @@ def append_transactions(
     wb.active = 0
     _save_safely(wb, workbook_path)
     return WriteResult(added=added, skipped_duplicates=skipped)
+
+
+def _suggest_categories(rows: list[dict]) -> None:
+    """Rows the rules leave uncategorised get the category of similar rows
+    a person categorised, when those clearly agree (learn.py). Rule-made
+    categories aren't learnt from: the rules already cover what they match,
+    and spreading them to near misses goes wrong ("Fee: Payment X" is a
+    bank charge; "Payment X" isn't)."""
+    taught = [r.get("Category Source") == CATEGORY_BY_HAND for r in rows]
+    learner = CategoryLearner(
+        [(r.get("Description") or "", bool(r.get("Credit")), r["Category"]) for r, t in zip(rows, taught) if t],
+        [r.get("Description") or "" for r, t in zip(rows, taught) if not t])
+    for row in rows:
+        if not _uncategorised(row["Category"]):
+            continue
+        suggestion = learner.suggest(row.get("Description"), bool(row.get("Credit")))
+        if suggestion:
+            row["Category"] = row["Suggested Category"] = suggestion.category
+            row["Category Source"] = suggestion.note()
 
 
 def _save_safely(wb: Workbook, workbook_path: Path) -> None:
@@ -438,6 +485,7 @@ def _write_transactions_sheet(wb: Workbook, rows: list[dict]) -> None:
         ws.cell(row=1, column=col, value=header).font = BOLD
         ws.column_dimensions[get_column_letter(col)].width = WIDTHS[col - 1]
     ws.column_dimensions[COL["Row Key"]].hidden = True
+    ws.column_dimensions[COL["Suggested Category"]].hidden = True
     ws.freeze_panes = "A2"
 
     for row_idx, row in enumerate(rows, start=2):

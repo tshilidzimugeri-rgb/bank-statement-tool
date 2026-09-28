@@ -363,6 +363,16 @@ if len(uncategorised):
         "Category column in Excel."
     )
     st.dataframe(uncategorised[["Date", "Description", "Debit", "Credit"]], hide_index=True)
+suggested = df[df["Category Source"].astype(str).str.startswith("Suggested")] if "Category Source" in df else []
+if len(suggested):
+    st.info(
+        f"{len(suggested)} transaction(s) have a **suggested** category, learnt from similar transactions "
+        "whose category you typed. Check them in the Category column in Excel: type over any that are "
+        "wrong, and later suggestions learn from it."
+    )
+    st.dataframe(suggested[["Date", "Description", "Category", "Category Source", "Debit", "Credit"]],
+                 hide_index=True)
+if len(uncategorised) or len(suggested):
     if st.button("Re-apply category rules"):
         try:
             append_transactions(selected, [], categories)
@@ -372,5 +382,5 @@ if len(uncategorised):
             st.rerun()
 
 with st.expander(f"All {len(df)} transactions"):
-    st.dataframe(df[[c for c in ("Date", "Description", "Category", "VAT", "Debit", "Credit", "Balance", "Status")
-                     if c in df]], hide_index=True)
+    st.dataframe(df[[c for c in ("Date", "Description", "Category", "Category Source", "VAT", "Debit", "Credit",
+                                 "Balance", "Status") if c in df]], hide_index=True)
