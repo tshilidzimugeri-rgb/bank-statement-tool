@@ -40,9 +40,30 @@ def test_unseen_layout_read_exactly_and_approved(seed, tmp_path):
         assert {t.status for t in rows} == {"APPROVED"}  # every row read is itself confirmed
 
 
+@pytest.mark.parametrize("seed, fee_line", [(s, s % 2 == 0) for s in range(10)]
+                         # fees totalled apart; 14 and 25 print no closing balance, so only those totals
+                         # show nothing is missing at the end
+                         + [(14, True), (20, True), (22, True), (25, True)])
+def test_unseen_layout_with_decimal_commas_read_exactly(seed, fee_line, tmp_path):
+    # "1 234,56" / "1.234,56" figures; with fee_line each fee also sits on its
+    # own line under its entry (the date printed once), fees are totalled apart
+    # from the debits, and the period is printed on a line of its own.
+    statement = generate(seed, decimal=",", fee_line=fee_line)
+    results, rows = _read(render_pdf(statement, tmp_path / "s.pdf"))
+    assert [(t.date, t.debit, t.credit, t.balance) for t in rows] == [
+        (w.date, w.debit, w.credit, w.balance) for w in statement.truth]
+    assert results[0].account_number == statement.account
+    recipe = statement.recipe
+    assert results[0].statement_period == f"{recipe.start:%d %b %Y} to {recipe.end:%d %b %Y}"
+    assert {t.status for t in rows} == {"APPROVED"}
+    checked_to_the_end = statement.style.closing_label or recipe.totals
+    assert [r.status for r in results] == ["APPROVED" if checked_to_the_end else "REVIEW_REQUIRED"]
+
+
 @pytest.mark.parametrize("seed", range(6))
-def test_a_misprinted_amount_is_never_approved(seed, tmp_path):
-    statement = generate(seed)
+@pytest.mark.parametrize("style", [{}, {"decimal": ",", "fee_line": True}])
+def test_a_misprinted_amount_is_never_approved(seed, style, tmp_path):
+    statement = generate(seed, **style)
     rng = random.Random(seed)
     # Change one printed amount (not its balance), as a misprint or misread would.
     # Only transaction rows (date, description, amount, ... balance), and only

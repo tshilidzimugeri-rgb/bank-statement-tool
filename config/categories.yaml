@@ -63,7 +63,7 @@ categories:
 
   - name: "Bank charges"
     type: expense
-    match: ["management fee", "fee:", "fee -", "fee-", "fee immediate"]
+    match: ["management fee", "fee:", "fee -", "fee-", "fee immediate", "service fee"]
 
   # --- Not profit: own-account transfers and personal ----------------------
   # Internet-banking transfers to a masked account number (e.g.

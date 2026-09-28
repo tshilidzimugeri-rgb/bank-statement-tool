@@ -28,7 +28,10 @@
 #            total_credits, closing_balance. When found, the transactions
 #            read must add up to them exactly, or the statement is flagged -
 #            this catches a missed first/last row that the running-balance
-#            check can't see. The generic block's patterns are tried too.
+#            check can't see. total_fees is for statements that total their
+#            fees separately and leave them out of total_debits: the debits
+#            read may then equal total_debits + total_fees. The generic
+#            block's patterns are tried too.
 #
 # "line_format" (optional) - for the line-by-line reader used when a table
 #            can't be split into columns: "thousands" separator in amounts
@@ -178,15 +181,22 @@ generic:
   period_patterns:
     - "statement period[:\\s]+([0-9A-Za-z /.\\-]+to[0-9A-Za-z /.\\-]+)"
     - "period[:\\s]+([0-9A-Za-z /.\\-]+to[0-9A-Za-z /.\\-]+)"
+    # A line holding only the period: "1 Jun 2025 to 30 Jun 2025", "01/06/2025 to 30/06/2025".
+    - "(?m)^\\s*(\\d{1,2}\\s?[a-z]{3,9}\\.?\\s?\\d{2,4}|\\d{1,2}[/.-]\\d{1,2}[/.-]\\d{2,4}|\\d{4}[/.-]\\d{1,2}[/.-]\\d{1,2})\\s*to\\s*(\\d{1,2}\\s?[a-z]{3,9}\\.?\\s?\\d{2,4}|\\d{1,2}[/.-]\\d{1,2}[/.-]\\d{2,4}|\\d{4}[/.-]\\d{1,2}[/.-]\\d{1,2})\\s*$"
     - "statement date[:\\s]+([0-9A-Za-z /.\\-]+)"
-  # Tried for every bank after its own control_totals.
+  # Tried for every bank after its own control_totals. Amounts as
+  # "12,345.67" or, with a decimal comma, "12 345,67" / "12.345,67".
   control_totals:
-    closing_balance: ["closing balance[:\\s]+r?\\s?(-?\\d{1,3}(?:[ ,]\\d{3})*\\.\\d{2}(?:\\s?(?:cr|dr)\\b)?)"]
+    closing_balance: ["closing balance[:\\s]+r?\\s?(-?(?:\\d{1,3}(?:[ ,]\\d{3})*\\.\\d{2}(?![\\d,])|\\d{1,3}(?:[ .]\\d{3})*,\\d{2}(?!\\d))(?:\\s?(?:cr|dr)\\b)?)"]
     # "Total debits 12,345.67" / "Total credits ..." and common wordings.
     total_debits:
-      - "total (?:debits|withdrawals|payments|money out)[:\\s]+-?r?\\s?(\\d{1,3}(?:[ ,]\\d{3})+\\.\\d{2}|\\d+\\.\\d{2})"
+      - "total (?:debits|withdrawals|payments|money out)[:\\s]+-?r?\\s?(\\d{1,3}(?:[ ,]\\d{3})+\\.\\d{2}|\\d+\\.\\d{2}(?![\\d,])|\\d{1,3}(?:[ .]\\d{3})+,\\d{2}(?!\\d)|\\d+,\\d{2}(?!\\d))"
     total_credits:
-      - "total (?:credits|deposits|receipts|money in)[:\\s]+r?\\s?(\\d{1,3}(?:[ ,]\\d{3})+\\.\\d{2}|\\d+\\.\\d{2})"
+      - "total (?:credits|deposits|receipts|money in)[:\\s]+r?\\s?(\\d{1,3}(?:[ ,]\\d{3})+\\.\\d{2}|\\d+\\.\\d{2}(?![\\d,])|\\d{1,3}(?:[ .]\\d{3})+,\\d{2}(?!\\d)|\\d+,\\d{2}(?!\\d))"
+    # Fees some statements total apart from, and leave out of, their total debits:
+    # "Total service fees (R1,30 VAT included) 10,00".
+    total_fees:
+      - "total (?:service |bank )?(?:fees|charges)(?:\\s*\\([^)]*\\))?[:\\s]+-?r?\\s?(\\d{1,3}(?:[ ,]\\d{3})+\\.\\d{2}|\\d+\\.\\d{2}(?![\\d,])|\\d{1,3}(?:[ .]\\d{3})+,\\d{2}(?!\\d)|\\d+,\\d{2}(?!\\d))"
   amount_style: split
   columns:
     date: ["date", "transaction date", "posting date"]

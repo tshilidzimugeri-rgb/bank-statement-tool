@@ -66,7 +66,7 @@ def assess(rows: list[Row], opening: float | None, full_text: str, layout: BankL
     """groups_confirmed: rows printed without a balance were already
     confirmed by the next balance (the layout-independent reader does that)."""
     from .parser import (  # parser imports this module
-        _check_control_totals, _find_control_total, _find_control_totals, statement_total,
+        _check_control_totals, _find_control_total, _find_control_totals, printed_fees, statement_total,
     )
 
     def flag(row: Row, reason: str) -> None:
@@ -157,6 +157,8 @@ def assess(rows: list[Row], opening: float | None, full_text: str, layout: BankL
             [abs(v) for v in _find_control_totals("total_credits", full_text, layout, generic)], credits),
         "printed_total_debits": statement_total(
             [abs(v) for v in _find_control_totals("total_debits", full_text, layout, generic)], debits),
+        # Fees printed as their own total, apart from the total debits.
+        "printed_total_fees": printed_fees(full_text, layout, generic),
         "last_balance": last_balance,
     }
     return Reading(rows, problems, report)

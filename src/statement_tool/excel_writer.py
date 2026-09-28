@@ -957,9 +957,9 @@ def _write_categories_sheet(wb: Workbook, categories: list[Category]) -> None:
 REVIEW_COLUMNS = [
     "Source File", "Statement Period", "Status", "Opening Balance", "Total Credits", "Total Debits",
     "Net Movement", "Closing (computed)", "Closing (printed)", "Printed Credits", "Printed Debits",
-    "Rows Needing Review", "Issues",
+    "Printed Fees", "Rows Needing Review", "Issues",
 ]
-REVIEW_WIDTHS = [34, 26, 17, 15, 15, 15, 15, 17, 16, 15, 15, 12, 90]
+REVIEW_WIDTHS = [34, 26, 17, 15, 15, 15, 15, 17, 16, 15, 15, 13, 12, 90]
 REVIEW_HEADER_ROW = 5
 
 
@@ -978,6 +978,7 @@ def statement_review_row(result) -> dict:
         "Closing (printed)": report.get("printed_closing"),
         "Printed Credits": report.get("printed_total_credits"),
         "Printed Debits": report.get("printed_total_debits"),
+        "Printed Fees": report.get("printed_total_fees"),
         "Rows Needing Review": sum(1 for t in result.transactions if t.status == REVIEW_REQUIRED),
         "Issues": "; ".join(result.problems) or "",
     }
@@ -1015,7 +1016,7 @@ def _write_review_sheet(wb: Workbook, reviews: list[dict], transaction_count: in
         for c, header in enumerate(REVIEW_COLUMNS, start=1):
             cell = ws.cell(row=r, column=c, value=review.get(header))
             if header in ("Opening Balance", "Total Credits", "Total Debits", "Net Movement", "Closing (computed)",
-                          "Closing (printed)", "Printed Credits", "Printed Debits"):
+                          "Closing (printed)", "Printed Credits", "Printed Debits", "Printed Fees"):
                 cell.number_format = CURRENCY_FORMAT
         status_cell = ws.cell(row=r, column=REVIEW_COLUMNS.index("Status") + 1)
         status_cell.fill = REVIEW_FILL if review.get("Status") == REVIEW_REQUIRED else APPROVED_FILL

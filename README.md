@@ -161,6 +161,15 @@ balance, and whether money came in or went out. It is tested on hundreds of
 made-up statements in layouts no bank config describes
 (`tests/fixtures/synthetic.py`).
 
+Figures are read as written, `1,234.56` or with a decimal comma (`1 234,56`,
+`1.234,56`, as ABSA prints them): each statement is read in the style most
+of its figures use, so `12,50` is never taken for a thousands number. An
+entry printed over two lines with its date once - a payment, then its
+`Service Fee` and the balance on the next line - is read as one dated
+entry; any other line without a printed date stays undated and is marked.
+Where a statement totals its fees apart from its debits (`Total service
+fees`), the debits read must equal the two together.
+
 Rules it follows:
 
 - **Nothing is guessed, changed or filled in.** Amounts, dates,
@@ -181,9 +190,9 @@ Rules it follows:
   REVIEW_REQUIRED), a Confidence (1.00 verified; 0.97 verified from a scan;
   0.80 needs review) and its Evidence - the line as printed. Each statement
   gets a line on the **Review** sheet: opening, credits, debits, net
-  movement, computed and printed closing balance, printed totals, rows
-  needing review, issues, and its final status - APPROVED only when every
-  row is and everything reconciles.
+  movement, computed and printed closing balance, printed totals (and fees,
+  where totalled apart), rows needing review, issues, and its final status -
+  APPROVED only when every row is and everything reconciles.
 - **Nobody is turned away.** Every readable statement is added; anything
   unconfirmed is highlighted for a person to check, not dropped.
 

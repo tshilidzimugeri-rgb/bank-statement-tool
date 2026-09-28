@@ -370,6 +370,12 @@ def statement_total(found: list[float], read: float | None) -> float | None:
     return together
 
 
+def printed_fees(text: str, layout: BankLayout, generic: BankLayout) -> float | None:
+    """Fees the statement totals apart from its total debits, if it does."""
+    found = _find_control_totals("total_fees", text, layout, generic)
+    return statement_total([abs(v) for v in found], None)
+
+
 def _check_control_totals(
     raw_transactions: list[tuple[str | None, str, float | None, float | None, float | None]],
     full_text: str,
@@ -403,6 +409,12 @@ def _check_control_totals(
         else:
             # some statements print payments as negative
             printed = statement_total([abs(v) for v in found], read)
+        if name == "total_debits" and abs(printed - read) > TOLERANCE:
+            fees = printed_fees(full_text, layout, generic)
+            if fees is not None:
+                without_fees = statement_total([abs(v) for v in found], read - fees)
+                if abs(without_fees + fees - read) <= TOLERANCE:
+                    continue  # the fees are totalled apart from the debits, and together they match
         if abs(printed - read) > TOLERANCE:
             what = (f"{label} on the statement is {printed:,.2f}" if len(found) == 1 or name == "closing_balance"
                     else f"{label} printed for each month of the statement adds up to {printed:,.2f}")

@@ -29,17 +29,35 @@ _FULL_MONTHS = {"january", "february", "march", "april", "may", "june", "july", 
 
 # --- Money ------------------------------------------------------------------------
 
-_MONEY_RE = re.compile(
-    r"(?<![\w.,/:])"
-    r"(?P<pre>\(|-\s?)?(?:R\s?|ZAR\s?)?(?P<pre2>-)?"
-    r"(?P<num>\d{1,3}(?:,\d{3})+\.\d{2}|\d+\.\d{2})"
-    r"(?P<post>\)|-(?![\d.])|\s?(?:CR|DR|Cr|Dr|cr|dr)(?![A-Za-z]))?"
-    r"\*?"
-    r"(?![\w.,/%])"
-)
+# Figures are written "1,234.56" or, with a decimal comma, "1 234,56" /
+# "1.234,56"; a statement is read in the style most of its figures use
+# (decimal_mark), so "12,50" is never read as twelve thousand-odd.
+def _money_re(decimal: str) -> re.Pattern:
+    num = (r"\d{1,3}(?:\.\d{3})+,\d{2}|\d+,\d{2}" if decimal == ","
+           else r"\d{1,3}(?:,\d{3})+\.\d{2}|\d+\.\d{2}")
+    return re.compile(
+        r"(?<![\w.,/:])"
+        r"(?P<pre>\(|-\s?)?(?:R\s?|ZAR\s?)?(?P<pre2>-)?"
+        rf"(?P<num>{num})"
+        rf"(?P<post>\)|-(?![\d{re.escape(decimal)}])|\s?(?:CR|DR|Cr|Dr|cr|dr)(?![A-Za-z]))?"
+        r"\*?"
+        r"(?![\w.,/%])"
+    )
+
+
+_MONEY_RES = {".": _money_re("."), ",": _money_re(",")}
+# Thousands written out with the separator that isn't the decimal mark
+# ("1,234.56", "1.234,56"): where a statement does that, "1 321.75" can't be one number.
+_GROUPED_THOUSANDS = {".": re.compile(r"(?<![\d,])\d{1,3}(?:,\d{3})+\.\d{2}(?!\d)"),
+                      ",": re.compile(r"(?<![\d.])\d{1,3}(?:\.\d{3})+,\d{2}(?!\d)")}
 # "3 205.00" printed with a space as thousands separator: the digits before it.
-_COMMA_THOUSANDS = re.compile(r"(?<![\d,])\d{1,3}(?:,\d{3})+\.\d{2}(?!\d)")
 _SPACE_GROUPS = re.compile(r"(?:^|(?<=[\s:(]))(?P<neg>-\s?|\()?(?:R\s?)?(?P<groups>\d{1,3}(?: \d{3})*) $")
+
+
+def decimal_mark(text: str) -> str:
+    """"," when most of the statement's figures have a decimal comma, else "."."""
+    commas = sum(1 for _ in _MONEY_RES[","].finditer(text or ""))
+    return "," if commas > sum(1 for _ in _MONEY_RES["."].finditer(text or "")) else "."
 
 
 @dataclass
@@ -68,13 +86,14 @@ class Money:
         return [1, -1]
 
 
-def money_tokens(line: str) -> list[list[Money]]:
+def money_tokens(line: str, decimal: str = ".") -> list[list[Money]]:
     """Money on the line, each as its possible readings (a second one when
     "3 205.00" could be one number)."""
     tokens = []
-    for m in _MONEY_RE.finditer(line):
+    for m in _MONEY_RES[decimal].finditer(line):
         num = m.group("num")
-        value = float(num.replace(",", ""))
+        whole, cents = num.rsplit(decimal, 1)
+        value = float(re.sub(r"\D", "", whole) + "." + cents)
         pre = (m.group("pre") or "") + (m.group("pre2") or "")
         post = (m.group("post") or "").strip().lower()
         sign = None
@@ -83,11 +102,10 @@ def money_tokens(line: str) -> list[list[Money]]:
         elif post == "cr":
             sign = 1
         readings = [Money(value, sign, m.start(), m.end())]
-        whole = num.split(".")[0]
-        if not pre and len(whole) == 3 and "," not in num:
+        if not pre and len(whole) == 3:
             g = _SPACE_GROUPS.search(line[:m.start()])
             if g:
-                merged = float(g.group("groups").replace(" ", "") + num)
+                merged = float(g.group("groups").replace(" ", "") + whole + "." + cents)
                 readings[0].leaves_digits = True
                 readings.append(Money(merged, -1 if g.group("neg") else sign, g.start(), m.end()))
         tokens.append(readings)
@@ -156,12 +174,12 @@ def _match_date(line: str, kind: str, month_first: bool) -> DateHit | None:
     return DateHit(m.end(), raw, day, month, year)
 
 
-def _choose_date_kind(lines: list[str]) -> tuple[str | None, bool]:
+def _choose_date_kind(lines: list[str], decimal: str = ".") -> tuple[str | None, bool]:
     """The date style the statement's rows use, and whether it's month-first."""
     counts: dict[str, int] = {}
     day_first = month_first = 0
     for line in lines:
-        if not _MONEY_RE.search(line):
+        if not _MONEY_RES[decimal].search(line):
             continue
         for kind in _KIND_ORDER:
             hit = _match_date(line, kind, False)
@@ -223,7 +241,7 @@ _CLOSING_WORDS = re.compile(
     r"closing balance|balance carried forward|carried forward|balance c/?f\b|c/fwd|balance at end|"
     r"ending balance|end balance|new balance", re.IGNORECASE)
 _NOT_A_ROW = re.compile(r"\b(totals?|turnover|summary|available balance|interest rate)\b", re.IGNORECASE)
-_NOT_DESCRIPTION = re.compile(r"\b(page|date|description|balance|statement|continued)\b", re.IGNORECASE)
+_NOT_DESCRIPTION = re.compile(r"\b(page|date|description|balance|statement|continued|turn over)\b", re.IGNORECASE)
 _DIGIT = re.compile(r"\d")
 
 UNKNOWN_DIRECTION = 0
@@ -235,6 +253,8 @@ class _Line:
     text: str
     date: DateHit | None
     tokens: list[list[Money]]  # money after the date
+    # The dated line whose entry this undated line finishes; its date is this line's.
+    continues: "_Line | None" = None
 
 
 @dataclass
@@ -381,7 +401,8 @@ class _Path:
 
 def extract(text: str, period_end: date | None = None, period_start: date | None = None) -> AutoResult:
     lines = [ln.strip() for ln in (text or "").splitlines()]
-    kind, month_first = _choose_date_kind(lines)
+    decimal = decimal_mark(text)
+    kind, month_first = _choose_date_kind(lines, decimal)
     reference_end = period_end or _latest_full_date(lines) or date.today()
     reference_start = period_start if period_end else None
 
@@ -391,15 +412,16 @@ def extract(text: str, period_end: date | None = None, period_start: date | None
         if hit and hit.year and abs(hit.year - reference_end.year) > 1 and kind == "d_mon_y":
             hit = _match_date(line, "d_mon", False)  # "01 Sep 20 litres": 20 is not a year here
         start = hit.end if hit else 0
-        parsed.append(_Line(i, line, hit, [t for t in money_tokens(line) if t[0].start >= start]))
+        parsed.append(_Line(i, line, hit, [t for t in money_tokens(line, decimal) if t[0].start >= start]))
 
-    if _COMMA_THOUSANDS.search(text or ""):
-        # The statement writes thousands with commas, so "1 321.75" can't be
-        # one number here: drop those readings.
+    if _GROUPED_THOUSANDS[decimal].search(text or ""):
+        # The statement writes thousands with commas (or, with a decimal
+        # comma, dots), so "1 321.75" can't be one number here: drop those readings.
         for p in parsed:
             p.tokens = [[t[0]] for t in p.tokens]
             for t in p.tokens:
                 t[0].leaves_digits = False
+    _link_entry_lines(parsed)
     dated = [p for p in parsed if p.date and p.tokens]
     # Statements that mark credits "Cr" print overdrawn balances unmarked, so
     # an unmarked balance may be negative there.
@@ -422,8 +444,8 @@ def extract(text: str, period_end: date | None = None, period_start: date | None
     # Each a list of possible values ("R3 304.56" could be 304.56 or 3,304.56)
     # with the digits each reading leaves unexplained.
     openings = _find_balance_readings(lines[:(dated[0].index + 1) if dated else len(lines)], _OPENING_WORDS, True,
-                                      allow_flip)
-    closing_readings = _find_balance_readings(lines, _CLOSING_WORDS, False, allow_flip)
+                                      allow_flip, decimal)
+    closing_readings = _find_balance_readings(lines, _CLOSING_WORDS, False, allow_flip, decimal)
     closings = [value for value, _ in closing_readings]
     if not dated:
         return AutoResult([], openings[0][0] if openings else None, closings[0] if closings else None)
@@ -468,12 +490,30 @@ def extract(text: str, period_end: date | None = None, period_start: date | None
     finished.sort(key=lambda f: f[0])
     best = finished[0][1]
 
-    rows = _build_rows(best.ops, lines, kind, month_first, reference_end, reference_start)
+    rows = _build_rows(best.ops, lines, kind, month_first, reference_end, reference_start, decimal)
     _flag_ambiguity(rows, best, [p for score, p in finished[1:] if score[0] == finished[0][0][0]])
     closing = next((c for c in closings if best.state is not None and abs(c - best.state) <= TOLERANCE),
                    closings[0] if closings else None)
     opening = best.opening if best.opening is not None else (openings[0][0] if openings else None)
     return AutoResult(rows, opening, closing)
+
+
+def _link_entry_lines(parsed: list[_Line]) -> None:
+    """An entry can run over two lines with the date printed once: the dated
+    line prints no balance, and the next line finishes it with a figure and
+    the balance ("3 Mar Payment 1 200,00-" then "Service Fee 8,75- 2 291,25";
+    "4 Mar Payment notification" then "Service Fee 1,25- 2 290,00"). That
+    next line is part of the dated entry, so it has the entry's date."""
+    previous = None
+    for p in parsed:
+        if not p.text:
+            continue
+        if (p.date is None and len(p.tokens) >= 2 and previous is not None and previous.date is not None
+                and previous.continues is None and len(previous.tokens) <= 1
+                and not any(w.search(t) for w in (_OPENING_WORDS, _CLOSING_WORDS) for t in (p.text, previous.text))
+                and not _NOT_A_ROW.search(p.text)):
+            p.date, p.continues = previous.date, previous
+        previous = p
 
 
 _LIST_HEADING = re.compile(
@@ -706,8 +746,11 @@ def _explain(state, readings, nxt: _Line | None, allow_flip):
     return None
 
 
-def _build_rows(ops, lines, kind, month_first, reference_end, reference_start=None) -> list[AutoRow]:
+def _build_rows(ops, lines, kind, month_first, reference_end, reference_start=None, decimal=".") -> list[AutoRow]:
     rows = []
+    amount_at: dict[int, int] = {}  # where each line's amount was read to start
+    for op in ops:
+        amount_at.setdefault(op[0].index, op[4])
     for line, direction, amount, balance, upto, check, prefix in ops:
         date_check = ""
         if line.date is None:
@@ -716,16 +759,25 @@ def _build_rows(ops, lines, kind, month_first, reference_end, reference_start=No
             iso, date_check = None, f"date unreadable ({line.date.raw})"
         else:
             iso = _with_year(line.date, reference_end, reference_start)
-        desc = line.text[(line.date.end if line.date else 0):upto].strip(" |")
+        entry = line.continues
+        desc = line.text[(line.date.end if line.date and not entry else 0):upto].strip(" |")
+        if entry:
+            # The entry's own words, then this line's ("Proof of payment SMS | Service Fee").
+            end = amount_at.get(entry.index)
+            if end is None and entry.tokens:
+                end = min(r.start for r in entry.tokens[0])
+            words = entry.text[entry.date.end:end].strip(" |")
+            desc = " | ".join(part for part in (words, desc) if part)
         for extra in lines[line.index + 1: line.index + 3]:
-            if (not extra or len(extra) > 70 or money_tokens(extra) or (kind and _match_date(extra, kind, month_first))
+            if (not extra or len(extra) > 70 or money_tokens(extra, decimal)
+                    or (kind and _match_date(extra, kind, month_first))
                     or _NOT_DESCRIPTION.search(extra) or extra.startswith("*")):
                 break
             desc = f"{desc} | {extra}" if desc else extra
         rows.append(AutoRow(
             iso, prefix + (desc or "(no description)"),
             amount if direction < 0 else None, amount if direction > 0 else None, balance,
-            "; ".join(c for c in (check, date_check) if c), line.text,
+            "; ".join(c for c in (check, date_check) if c), f"{entry.text} / {line.text}" if entry else line.text,
             amount if direction == UNKNOWN_DIRECTION else None,
         ))
     return rows
@@ -769,13 +821,14 @@ def date_in_period(month: int, day: int, period_start: date | None, period_end: 
     return min(candidates, key=distance) if candidates else None
 
 
-def _find_balance(lines: list[str], words: re.Pattern, first: bool, allow_flip: bool = False) -> list[float]:
+def _find_balance(lines: list[str], words: re.Pattern, first: bool, allow_flip: bool = False,
+                  decimal: str = ".") -> list[float]:
     """Possible values of the first (or last) balance after the words."""
-    return [value for value, _ in _find_balance_readings(lines, words, first, allow_flip)]
+    return [value for value, _ in _find_balance_readings(lines, words, first, allow_flip, decimal)]
 
 
 def _find_balance_readings(lines: list[str], words: re.Pattern, first: bool,
-                           allow_flip: bool = False) -> list[tuple[float, int]]:
+                           allow_flip: bool = False, decimal: str = ".") -> list[tuple[float, int]]:
     """As _find_balance, each value with the digit groups its reading leaves
     unexplained ("1 321.75" read as 321.75 leaves the "1")."""
     hits = []
@@ -783,7 +836,7 @@ def _find_balance_readings(lines: list[str], words: re.Pattern, first: bool,
         m = words.search(line)
         if not m:
             continue
-        tokens = money_tokens(line[m.end():])
+        tokens = money_tokens(line[m.end():], decimal)
         if tokens:
             hits.append([(v, r.leaves_digits) for r in tokens[0] for v in _balance_values(r, allow_flip)])
     if not hits:
@@ -795,5 +848,6 @@ def printed_closings(text: str) -> list[float]:
     """Possible values of the closing balance printed on the statement, read
     with the statement's own sign convention."""
     lines = [ln.strip() for ln in (text or "").splitlines()]
-    allow_flip = any(r.sign == 1 for ln in lines for tok in money_tokens(ln) for r in tok[:1])
-    return _find_balance(lines, _CLOSING_WORDS, False, allow_flip)
+    decimal = decimal_mark(text)
+    allow_flip = any(r.sign == 1 for ln in lines for tok in money_tokens(ln, decimal) for r in tok[:1])
+    return _find_balance(lines, _CLOSING_WORDS, False, allow_flip, decimal)

@@ -6,6 +6,10 @@ columns, minus signs, Cr/Dr, trailing minus, brackets), thousands separator,
 fee and extra columns, balances on every row or only at day end, opening and
 closing lines, page breaks with "brought forward" lines, and lists that
 aren't transactions. Nothing here is a real bank's layout.
+
+On request (generate's decimal and fee_line), figures are written with a
+decimal comma ("1 234,56"), and each fee sits on its own line under its
+entry, the date printed once - with fees totalled apart from the debits.
 """
 from __future__ import annotations
 
@@ -38,6 +42,10 @@ class Style:
     balance_every_row: bool
     summary_list: bool
     rows_per_page: int
+    decimal: str = "."  # "," for "1 234,56"
+    # Each fee on its own undated line under its entry, which then carries
+    # the balance; an entry can be just a fee ("SMS NOTIFICATION").
+    fee_line: bool = False
 
 
 @dataclass
@@ -78,14 +86,14 @@ def random_style(rng: random.Random) -> Style:
     )
 
 
-def _fmt_number(value: float, thousands: str) -> str:
+def _fmt_number(value: float, thousands: str, decimal: str = ".") -> str:
     whole, cents = f"{abs(value):.2f}".split(".")
     groups = []
     while len(whole) > 3:
         groups.insert(0, whole[-3:])
         whole = whole[:-3]
     groups.insert(0, whole)
-    return f"{thousands.join(groups)}.{cents}"
+    return f"{thousands.join(groups)}{decimal}{cents}"
 
 
 def _fmt_date(d: date, fmt: str) -> str:
@@ -104,7 +112,7 @@ def _fmt_date(d: date, fmt: str) -> str:
 
 def _money(value: float, style: Style, kind: str) -> str:
     """kind: 'debit', 'credit' (a movement) or 'balance'."""
-    body = ("R" if style.currency else "") + _fmt_number(value, style.thousands)
+    body = ("R" if style.currency else "") + _fmt_number(value, style.thousands, style.decimal)
     s = style.amount_style
     negative = value < 0 if kind == "balance" else kind == "debit"
     if s == "crdr":
@@ -136,9 +144,16 @@ class Recipe:
     day_rows: list  # (date, description, signed amount, fee, accrued)
 
 
-def generate(seed: int) -> Statement:
+def generate(seed: int, decimal: str = ".", fee_line: bool = False) -> Statement:
     rng = random.Random(seed)
     style = random_style(rng)
+    if decimal == ",":
+        style.decimal = ","
+        style.thousands = {",": "."}.get(style.thousands, style.thousands)
+    if fee_line:
+        style.fee_column = style.fee_line = style.balance_every_row = True
+        if style.amount_style == "split_zero":
+            style.amount_style = "split"
     start = date(rng.choice([2025, 2026]), rng.randint(1, 12), 1)
     end = (start + timedelta(days=32)).replace(day=1) - timedelta(days=1)
     account = str(rng.randint(10**9, 10**10 - 1))
@@ -150,6 +165,9 @@ def generate(seed: int) -> Statement:
     day = start
     for _ in range(rng.randint(12, 55)):
         day = min(end, day + timedelta(days=rng.choice([0, 0, 1, 1, 2, 3])))
+        if style.fee_line and rng.random() < 0.15:
+            day_rows.append((day, "SMS NOTIFICATION", 0.0, 1.25, None))  # an entry that is only its fee
+            continue
         credit = rng.random() < 0.3
         size = rng.choice([rng.uniform(1, 150), rng.uniform(100, 3000), rng.uniform(1000, 60000)])
         amount = round(size, 2) * (1 if credit else -1)
@@ -190,23 +208,30 @@ def build(recipe: Recipe) -> Statement:
             money = f"{debit_text}   {credit_text}"
         else:
             money = _money(abs(amount), style, "debit" if amount < 0 else "credit")
-        parts = [date_text, desc, money]
+        parts = [date_text, desc] + ([money] if amount else [])
+        entry = [parts]  # the entry's lines, kept together on one page
         if fee is not None:
+            if style.fee_line:
+                parts = ["SERVICE FEE"]
+                entry.append(parts)
             parts.append(_money(fee, style, "debit"))
         if show_balance:
             parts.append(_money(balance, style, "balance"))
             if accrued is not None:
-                parts.append(_fmt_number(accrued, style.thousands))
-        table.append("   ".join(parts))
+                parts.append(_fmt_number(accrued, style.thousands, style.decimal))
+        table.append("\n".join("   ".join(p) for p in entry))
         amount_balance = None if fee is not None else (balance if show_balance else None)
-        truth.append(TruthRow(d.isoformat(), -amount if amount < 0 else None, amount if amount > 0 else None,
-                              amount_balance))
+        rows_before = len(truth)
+        if amount:
+            truth.append(TruthRow(d.isoformat(), -amount if amount < 0 else None, amount if amount > 0 else None,
+                                  amount_balance))
         if fee is not None:
             truth.append(TruthRow(d.isoformat(), fee, None, balance if show_balance else None))
-        rows_per_line.append(2 if fee is not None else 1)
+        rows_per_line.append(len(truth) - rows_before)
 
+    period = f"{_fmt_date(recipe.start, 'dd Mon yyyy')} to {_fmt_date(recipe.end, 'dd Mon yyyy')}"
     head = [recipe.bank, f"{recipe.account_label} {recipe.account}",
-            f"Statement Period: {_fmt_date(recipe.start, 'dd Mon yyyy')} to {_fmt_date(recipe.end, 'dd Mon yyyy')}"]
+            period if style.fee_line else f"Statement Period: {period}"]
     head += recipe.summary_lines
     head.append(f"{style.opening_label}   {_money(recipe.opening, style, 'balance')}")
     header_row = "Date   Description   " + ("Debit   Credit   " if style.amount_style.startswith("split") else
@@ -223,17 +248,22 @@ def build(recipe: Recipe) -> Statement:
             if last_printed is not None:
                 page.append(f"Balance brought forward   {_money(last_printed, style, 'balance')}")
         chunk, rows_left = rows_left[:style.rows_per_page], rows_left[style.rows_per_page:]
-        page += chunk
+        page += [line for entry in chunk for line in entry.split("\n")]
         lines_done += len(chunk)
         pages.append(page)
     closing = balance
     if style.closing_label:
         pages[-1].append(f"{style.closing_label}   {_money(closing, style, 'balance')}")
     if recipe.totals:
-        debits = sum(t.debit or 0 for t in truth)
+        fees = round(sum(fee or 0 for _, _, _, fee, _ in day_rows), 2) if style.fee_line else 0
+        debits = sum(t.debit or 0 for t in truth) - fees  # fee lines: fees are totalled on their own
         credits = sum(t.credit or 0 for t in truth)
-        pages[-1].append(f"Total debits   {_fmt_number(debits, style.thousands)}")
-        pages[-1].append(f"Total credits   {_fmt_number(credits, style.thousands)}")
+        pages[-1].append(f"Total debits   {_fmt_number(debits, style.thousands, style.decimal)}")
+        pages[-1].append(f"Total credits   {_fmt_number(credits, style.thousands, style.decimal)}")
+        if style.fee_line:
+            vat = _fmt_number(fees * 15 / 115, "", style.decimal)
+            pages[-1].append(f"Total service fees (R{vat} VAT included)   "
+                             f"{_fmt_number(fees, style.thousands, style.decimal)}")
     pages[-1].append("Please report any errors within 30 days.")
     statement = Statement(style, pages, truth, recipe.account, recipe.opening, closing, table=table,
                           truth_rows_per_line=rows_per_line)
