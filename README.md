@@ -315,6 +315,13 @@ Flags: `--days N` (override the lookback window), `--reprocess`,
 
 ## Adding a new bank's layout
 
+**South African banks.** Every bank's statement is read the same way, by
+its own running balance. Real statements from ABSA, FNB, Standard Bank and
+Capitec are read exactly (tested). Nedbank, Investec, TymeBank, Discovery
+Bank, African Bank, Bank Zero and Old Mutual are named in
+`config/banks.yaml` and tested on made-up statements; no real statement
+from them has been tried yet, so check the first one's Review sheet.
+
 Usually not needed: a statement from a bank without its own entry is read
 by trying every row shape the tool knows (Standard Bank, Capitec, FNB and
 plain layouts) and keeping the reading whose numbers match the statement's

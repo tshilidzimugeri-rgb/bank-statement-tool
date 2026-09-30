@@ -193,14 +193,24 @@ def _as_tuple(r: Row) -> tuple:
 
 
 def _flag_duplicates(rows: list[Row], flag) -> None:
-    """Same date, description and amount twice, where the running balance
-    doesn't show them as two separate transactions."""
+    """Same date, description and amount twice, where the statement doesn't
+    show them as two separate transactions: the same printed line read
+    twice. Different printed lines are different transactions, even with no
+    balance of their own (a payment whose balance is printed after its fee)
+    or the same balance after both (two R2.00 fees with money coming in
+    between their payments). Where the printed lines aren't known, the same
+    balance after both - or none to tell them apart - is flagged."""
     seen: dict = {}
     for row in rows:
         key = (row.date, row.description, row.debit, row.credit, row.unassigned)
         if key in seen:
             other = seen[key]
-            if row.balance is None or other.balance is None or abs(row.balance - other.balance) <= TOLERANCE:
+            same_line = bool(row.evidence) and row.evidence == other.evidence
+            other_lines = bool(row.evidence and other.evidence) and row.evidence != other.evidence
+            same_balance = (row.balance is not None and other.balance is not None
+                            and abs(row.balance - other.balance) <= TOLERANCE)
+            no_balance = row.balance is None or other.balance is None
+            if same_line or (not other_lines and (same_balance or no_balance)):
                 flag(row, "possible duplicate of an earlier row")
         seen[key] = row
 

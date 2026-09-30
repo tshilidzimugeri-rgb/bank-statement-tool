@@ -40,7 +40,28 @@ def test_unseen_layout_read_exactly_and_approved(seed, tmp_path):
         assert {t.status for t in rows} == {"APPROVED"}  # every row read is itself confirmed
 
 
-@pytest.mark.parametrize("seed, fee_line", [(s, s % 2 == 0) for s in range(10)]
+@pytest.mark.parametrize("header, bank", [
+    ("Nedbank Limited  nedbank.co.za", "Nedbank"),
+    ("Investec Bank Limited  investec.com", "Investec"),
+    ("TymeBank  tymebank.co.za", "TymeBank"),
+    ("Discovery Bank Limited", "Discovery Bank"),
+    ("African Bank Limited  africanbank.co.za", "African Bank"),
+    ("Bank Zero Mutual Bank  bankzero.co.za", "Bank Zero"),
+    ("Old Mutual Bank  Old Mutual Money Account", "Old Mutual"),
+])
+def test_other_south_african_banks_named_and_read_exactly(header, bank, tmp_path):
+    import dataclasses
+    from synthetic import build
+    statement = generate(3)
+    statement = build(dataclasses.replace(statement.recipe, bank=header))
+    results, rows = _read(render_pdf(statement, tmp_path / "s.pdf"))
+    assert results[0].bank_display_name == bank
+    assert [(t.date, t.debit, t.credit, t.balance) for t in rows] == [
+        (w.date, w.debit, w.credit, w.balance) for w in statement.truth]
+    assert {t.status for t in rows} == {"APPROVED"}
+
+
+@pytest.mark.parametrize("seed, fee_line",[(s, s % 2 == 0) for s in range(10)]
                          # fees totalled apart; 14 and 25 print no closing balance, so only those totals
                          # show nothing is missing at the end
                          + [(14, True), (20, True), (22, True), (25, True)])

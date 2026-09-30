@@ -214,6 +214,29 @@ def test_account_number_found_on_first_page(bank, first_page, expected):
     assert _find_account_number(first_page, layouts[bank], generic) == expected
 
 
+def test_same_purchase_twice_on_different_printed_lines_is_not_a_duplicate():
+    from statement_tool.extract.reading import Row, _flag_duplicates
+
+    def flag(row, reason):
+        row.check = reason
+
+    # A payment's balance is printed after its fee, so the payment row has
+    # none of its own; two such payments on different lines are two payments.
+    first = Row("2026-07-01", "Online Purchase: Streamco", 25.00, None, None,
+                evidence="01/07/2026 Online Purchase: Streamco -25.00 -2.00 150.00")
+    second = Row("2026-07-01", "Online Purchase: Streamco", 25.00, None, None,
+                 evidence="01/07/2026 Online Purchase: Streamco -25.00 -2.00 123.00")
+    read_twice = Row("2026-07-01", "Online Purchase: Streamco", 25.00, None, None,
+                     evidence="01/07/2026 Online Purchase: Streamco -25.00 -2.00 123.00")
+    # Two R2.00 fees on different lines, the same balance after both (money
+    # came in between their payments): two fees.
+    fee_a = Row("2026-07-19", "Fee: PayShap", 2.0, None, 30.00, evidence="19/07/2026 PayShap -300.00 -2.00 30.00")
+    fee_b = Row("2026-07-19", "Fee: PayShap", 2.0, None, 30.00, evidence="19/07/2026 PayShap -120.00 -2.00 30.00")
+    _flag_duplicates([first, second, read_twice, fee_a, fee_b], flag)
+    assert (first.check, second.check, fee_a.check, fee_b.check) == ("", "", "", "")
+    assert read_twice.check == "possible duplicate of an earlier row"  # the same printed line again
+
+
 def test_identical_rows_sharing_a_balance_are_both_kept():
     # Two R2.00 fees on the same day with the same balance (money came in
     # between their payments) - both real, neither a duplicate.

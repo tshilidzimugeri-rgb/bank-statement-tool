@@ -164,6 +164,54 @@ banks:
       amount: ["amount"]
       balance: ["balance"]
 
+  # The other South African banks. Their statements are read by the same
+  # layout-independent reader as every bank (see README "How statements are
+  # checked"); these entries name the bank. Detection strings are the
+  # banks' own names and web addresses as printed on their statements -
+  # not merchant names, so a debit order to one of them in another bank's
+  # statement doesn't relabel it (the banks above are also checked first).
+  investec:
+    display_name: "Investec"
+    detect: ["investec bank limited", "investec.co.za", "investec.com"]
+    amount_style: split
+    columns: &other_bank_columns
+      date: ["date", "transaction date", "posting date"]
+      description: ["description", "narrative", "transaction details", "details"]
+      debit: ["debit", "debits", "money out", "withdrawals"]
+      credit: ["credit", "credits", "money in", "deposits"]
+      balance: ["balance"]
+      amount: ["amount"]
+
+  tymebank:
+    display_name: "TymeBank"
+    detect: ["tymebank", "tyme bank limited", "tymebank.co.za"]
+    amount_style: split
+    columns: *other_bank_columns
+
+  discovery:
+    display_name: "Discovery Bank"
+    detect: ["discovery bank limited", "discovery bank ltd", "discovery.co.za/bank"]
+    amount_style: split
+    columns: *other_bank_columns
+
+  african_bank:
+    display_name: "African Bank"
+    detect: ["african bank limited", "africanbank.co.za"]
+    amount_style: split
+    columns: *other_bank_columns
+
+  bank_zero:
+    display_name: "Bank Zero"
+    detect: ["bank zero mutual bank", "bankzero.co.za"]
+    amount_style: split
+    columns: *other_bank_columns
+
+  old_mutual:
+    display_name: "Old Mutual"
+    detect: ["old mutual bank", "oldmutual.co.za/money-account", "old mutual money account"]
+    amount_style: split
+    columns: *other_bank_columns
+
 # Used when no "detect" strings match. Widens the alias lists so common
 # layouts from an unlisted bank still have a decent chance of being parsed.
 # Statements handled this way are always flagged "Bank detection: generic"

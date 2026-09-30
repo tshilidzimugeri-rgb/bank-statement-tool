@@ -55,6 +55,34 @@ def test_overlapping_statements_do_not_double_count(tmp_path):
     assert _column(ws, "Description")[:3] == ["RENT", "OUTSURANCE", "RENT"]
 
 
+def test_overlapping_statements_that_wrap_a_description_differently_do_not_double_count(tmp_path):
+    book = tmp_path / "out.xlsx"
+    # The same fee in two statements, its long description broken over lines
+    # in a different place: "... FEES | ZA" in one, "... ZA FEES" in the other.
+    append_transactions(book, [_t("2026-08-01", "CARD FEE: KAROO DATA CAPE TOWN FEES | ZA", debit=1.0, balance=500.0,
+                                  source="jul.pdf")], CATEGORIES)
+    result = append_transactions(book, [
+        _t("2026-08-01", "CARD FEE: KAROO DATA CAPE TOWN ZA FEES", debit=1.0, balance=500.0, source="aug.pdf"),
+        _t("2026-08-02", "CARD FEE: KAROO DATA CAPE TOWN ZA FEES", debit=1.0, balance=499.0, source="aug.pdf"),
+    ], CATEGORIES)
+    assert (result.added, result.skipped_duplicates) == (1, 1)
+    # The description is kept as first printed.
+    assert _column(load_workbook(book)[TRANSACTIONS_SHEET], "Description")[0] == "CARD FEE: KAROO DATA CAPE TOWN FEES | ZA"
+
+
+def test_workbook_from_an_earlier_version_still_recognises_its_statements(tmp_path):
+    book = tmp_path / "out.xlsx"
+    rows = [_t("2026-03-01", "RENT", credit=1000.0, balance=1100.0), _t("2026-03-05", "OUTSURANCE", debit=200.0,
+                                                                         balance=900.0)]
+    append_transactions(book, rows, CATEGORIES)
+    wb = load_workbook(book)
+    ws = wb[TRANSACTIONS_SHEET]
+    for r in (2, 3):
+        ws[f"{COL['Row Key']}{r}"] = f"old-style-key-{r}"  # keys as an earlier version wrote them
+    wb.save(book)
+    assert append_transactions(book, rows, CATEGORIES).skipped_duplicates == 2
+
+
 def test_rows_sorted_by_date_and_categorised(tmp_path):
     book = tmp_path / "out.xlsx"
     append_transactions(book, [_t("2026-04-02", "OUTSURANCE", debit=5.0, balance=10.0)], CATEGORIES)

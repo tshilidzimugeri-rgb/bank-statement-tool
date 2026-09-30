@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import calendar
 import hashlib
+from collections import Counter
 import os
 import re
 import shutil
@@ -149,21 +150,49 @@ def _row_key(t: Transaction, occurrence: int = 0) -> str:
     otherwise look like duplicates, dropping one. The same statement period
     numbers its repeats the same way, so overlapping statements still match.
     """
+    return _key(t.client, t.bank, t.account, t.date, t.description, t.debit, t.credit, t.balance, t.unassigned,
+                occurrence)
+
+
+def _key(client, bank, account, day, description, debit, credit, balance, unassigned, occurrence) -> str:
     raw = "|".join(
         [
-            t.client,
-            t.bank,
-            *([t.account] if t.account else []),
-            t.date,
-            t.description,
-            f"{t.debit:.2f}" if t.debit is not None else "",
-            f"{t.credit:.2f}" if t.credit is not None else "",
-            f"{t.balance:.2f}" if t.balance is not None else "",
-            *([f"u{t.unassigned:.2f}"] if t.unassigned is not None else []),
+            client or "",
+            bank or "",
+            *([str(account)] if account else []),
+            day or "",
+            _same_words(description),
+            f"{debit:.2f}" if debit is not None else "",
+            f"{credit:.2f}" if credit is not None else "",
+            f"{balance:.2f}" if balance is not None else "",
+            *([f"u{unassigned:.2f}"] if unassigned is not None else []),
             *([str(occurrence)] if occurrence else []),
         ]
     )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+
+def _same_words(description: str | None) -> str:
+    """The description's words in a fixed order. Two statements covering the
+    same days can wrap a long description differently ("... Fees | Za" in
+    one, "... Za Fees" in the other); with the same date, amounts and
+    balance it's the same transaction. Only the matching uses this - the
+    description is kept as printed."""
+    return " ".join(sorted(re.findall(r"[^\s|]+", (description or "").lower())))
+
+
+def _rekey(rows: list[dict]) -> None:
+    """Row keys of a workbook's rows, worked out afresh from their own
+    figures, so workbooks made by an earlier version match new statements."""
+    seen: Counter = Counter()
+    for row in rows:
+        day = _as_date(row.get("Date"))
+        day = day.isoformat() if isinstance(day, date) else str(day or "")
+        fields = (row.get("Client"), row.get("Bank"), row.get("Account"), day, row.get("Description"),
+                  row.get("Debit"), row.get("Credit"), row.get("Balance"), row.get("In/Out Not Shown"))
+        base = _key(*fields, 0)
+        row["Row Key"] = _key(*fields, seen[base])
+        seen[base] += 1
 
 
 def _as_date(value) -> date | str:
@@ -337,6 +366,7 @@ def append_transactions(
             f"{workbook_path.name} holds account {', '.join(sorted(existing_accounts)) or '(none)'}; "
             f"refusing to add account {', '.join(sorted(new_accounts - existing_accounts)) or '(none)'} to it"
         )
+    _rekey(rows)
     was = {}  # each row's category as it was, to tell which changed
     for row in rows:
         row["Date"] = _as_date(row.get("Date"))
