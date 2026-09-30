@@ -20,13 +20,26 @@ Double-click **`run_app.bat`** (or run
 `.venv\Scripts\streamlit run src\statement_tool\app.py`). A page opens in
 your browser at http://localhost:8501:
 
-1. Drop in one or more statement PDFs. If they're password-protected, type
-   the password too.
-2. Click **Add to workbook**. Each statement is read, its transactions are
-   categorised and added to its account's workbook in `output/` (e.g.
-   `output/FTW Properties (10237421516).xlsx`), and the page
-   shows income, expenses, profit and charts.
-3. Click **Download Excel workbook** for the full reports.
+The side menu has a page for each job:
+
+- **Upload statements** - drop in one or more statement PDFs (and the
+  password, if they're locked) and click **Read statements**. Each upload
+  makes a **new workbook** (one per bank account) from just the
+  statements uploaded then; statements from earlier uploads never carry
+  over.
+- **Continue a workbook** - open a workbook you downloaded before; the
+  statements you upload next are added to it.
+- **Financials** - income, expenses, profit, charts, and the income
+  statement by category and month.
+- **VAT** - VAT on income and expenses per month, and VAT payable
+  (calculated at 15%, never read from the statements).
+- **Checks** - each statement's status, the balance check, rows needing
+  review, and uncategorised or suggested categories.
+- **Download** - the Excel workbook with all the report sheets. Keep it:
+  it's how you add next month's statements (Continue a workbook).
+
+The page works in a temporary folder of its own; it doesn't use the
+`output/` folder (the command-line tool below still does).
 
 Uploading the same statement twice, or statements that overlap (a 6-month
 statement plus the monthly ones), never double-counts: each transaction is
@@ -162,9 +175,9 @@ Online, the page won't open without `APP_PASSWORD`, and it keeps nothing
 between visits: each visit works in its own temporary folder, which is
 gone when you leave. Each upload makes a new workbook from just the files
 uploaded that time - statements added earlier in the visit aren't carried
-over. To add statements to an existing workbook, upload that workbook
-along with the new PDFs, then **download the updated workbook** before
-closing the page. `packages.txt` installs the OCR tools
+over. To add statements to an existing workbook, open that workbook under
+**Continue a workbook**, upload the new PDFs, then **download the updated
+workbook** before closing the page. `packages.txt` installs the OCR tools
 there, so scanned statements work online too.
 
 ## How statements are checked

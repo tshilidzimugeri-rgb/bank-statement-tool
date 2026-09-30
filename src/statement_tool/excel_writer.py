@@ -1032,6 +1032,42 @@ def statement_review_row(result) -> dict:
     }
 
 
+def read_reviews(workbook_path: Path) -> list[dict]:
+    """The Review sheet's line per statement, as {header: value}."""
+    wb = _open_workbook(workbook_path)
+    try:
+        return _read_reviews(wb)
+    finally:
+        wb.close()
+
+
+def vat_by_month(rows: list[dict], categories: list[Category]) -> list[dict]:
+    """Per month, the figures the VAT Summary sheet calculates: income and
+    expenses, and the VAT in those whose VAT cell is Yes (calculated at
+    VAT_RATE, never read from the statements)."""
+    types = {c.name: c.type for c in report_categories(categories, rows)}
+    months: dict[str, dict] = {}
+    for row in rows:
+        kind = types.get(row.get("Category"))
+        if kind not in ("income", "expense") or not row.get("Month"):
+            continue
+        amount = (row.get("Credit") or 0) - (row.get("Debit") or 0)
+        if kind == "expense":
+            amount = -amount
+        vat = amount - amount / (1 + VAT_RATE) if row.get("VAT") == "Yes" else 0.0
+        m = months.setdefault(row["Month"], {"Month": row["Month"], "Income": 0.0, "VAT on income": 0.0,
+                                             "Expenses": 0.0, "VAT on expenses": 0.0})
+        label = "Income" if kind == "income" else "Expenses"
+        m[label] += amount
+        m[f"VAT on {label.lower()}"] += vat
+    out = []
+    for month in sorted(months):
+        m = months[month]
+        m["VAT payable"] = m["VAT on income"] - m["VAT on expenses"]
+        out.append({k: round(v, 2) if isinstance(v, float) else v for k, v in m.items()})
+    return out
+
+
 def _read_reviews(wb: Workbook) -> list[dict]:
     if REVIEW_SHEET not in wb.sheetnames:
         return []

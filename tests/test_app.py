@@ -1,4 +1,5 @@
-"""The upload page as it runs online, driven through Streamlit's test runner."""
+"""The upload page, driven through Streamlit's test runner: its side menu,
+and each upload making a new workbook."""
 import dataclasses
 import sys
 from datetime import timedelta
@@ -38,16 +39,24 @@ def _two_statements_of_one_account(tmp_path):
     return render_pdf(first, tmp_path / "first.pdf"), render_pdf(second, tmp_path / "second.pdf")
 
 
-def _upload(at, pdfs=(), workbooks=()):
-    boxes = {u.label.split(" (")[0]: u for u in at.file_uploader}
-    if workbooks:
-        boxes["Workbook you downloaded from this page last time"].set_value(
-            [(p.name, p.read_bytes(), "application/octet-stream") for p in workbooks])
-    boxes["Bank statement PDFs"].set_value([(p.name, p.read_bytes(), "application/pdf") for p in pdfs])
-    at.button[0].click()
-    at.run()
+def _go(at, page):
+    at.sidebar.radio(key="page").set_value(page).run()
+    assert not at.exception, [e.message for e in at.exception]
+
+
+def _upload(at, pdfs):
+    _go(at, "Upload statements")
+    at.file_uploader[0].set_value([(p.name, p.read_bytes(), "application/pdf") for p in pdfs])
+    at.button[0].click().run()
     assert not at.exception, [e.message for e in at.exception]
     return Path(at.session_state["last_workbook"])
+
+
+def _open(at, workbook):
+    _go(at, "Continue a workbook")
+    at.file_uploader[0].set_value([(workbook.name, workbook.read_bytes(), "application/octet-stream")])
+    at.button[0].click().run()
+    assert not at.exception, [e.message for e in at.exception]
 
 
 def _sources(workbook):
@@ -55,13 +64,15 @@ def _sources(workbook):
     return {r["Source File"].split("_", 1)[1] for r in read_transactions(workbook)}
 
 
-def test_each_online_upload_makes_a_new_workbook(tmp_path, monkeypatch):
+def test_each_upload_makes_a_new_workbook_and_continuing_one_is_its_own_page(tmp_path, monkeypatch):
+    # The test runner counts as online, which needs a password. On this
+    # computer the page behaves the same, without one.
     monkeypatch.setenv("APP_PASSWORD", "test")
     first, second = _two_statements_of_one_account(tmp_path)
     at = AppTest.from_file(str(APP), default_timeout=300)
     at.session_state["signed_in"] = True
     at.run()
-    assert any("each upload makes a new workbook" in i.value for i in at.info), "not running as online"
+    assert not at.exception, [e.message for e in at.exception]
 
     book = _upload(at, [first])
     assert _sources(book) == {first.name}
@@ -69,8 +80,14 @@ def test_each_online_upload_makes_a_new_workbook(tmp_path, monkeypatch):
     kept.write_bytes(book.read_bytes())
 
     # A second statement of the same account, uploaded on its own later in
-    # the same visit: the workbook holds only it.
+    # the same visit: the new workbook holds only it.
     assert _sources(_upload(at, [second])) == {second.name}
 
-    # Uploaded together with the earlier workbook, it's added to it.
-    assert _sources(_upload(at, [second], workbooks=[kept])) == {first.name, second.name}
+    # Opened on "Continue a workbook", the earlier workbook gets it added.
+    _open(at, kept)
+    assert _sources(_upload(at, [second])) == {first.name, second.name}
+
+    # Every page of the menu shows this workbook.
+    for page in ("Financials", "VAT", "Checks", "Download"):
+        _go(at, page)
+        assert at.header[0].value.startswith(page)
