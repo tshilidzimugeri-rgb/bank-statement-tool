@@ -12,15 +12,11 @@
 # interactively when running in a terminal, and will otherwise label the
 # statement "UNMAPPED_CLIENT" and flag it for manual review.
 #
-# Add your real clients under "clients:" below.
-clients:
-  - name: "FTW Properties"
-    match:
-      - "ftw properties"
-      - "10237421516"
-      - "10 23 742 151 6"
+# Add clients under "clients:" below. None are set up: each statement's
+# workbook is named by its account number and period.
+clients: []
 
-# Example entries (uncomment and edit):
+# Example entries (put them under "clients:" instead of [] and edit):
 #  - name: "Acme Trading CC"
 #    match:
 #      - "acme"

@@ -83,6 +83,11 @@ def test_each_upload_makes_a_new_workbook_and_continuing_one_is_its_own_page(tmp
     # the same visit: the new workbook holds only it.
     assert _sources(_upload(at, [second])) == {second.name}
 
+    # Uploaded together, two statements of one account get a workbook each.
+    _upload(at, [first, second])
+    books = sorted((Path(at.session_state["work_dir"]) / "output").glob("*.xlsx"))
+    assert sorted(_sources(b) for b in books) == [{first.name}, {second.name}]
+
     # Opened on "Continue a workbook", the earlier workbook gets it added.
     _open(at, kept)
     assert _sources(_upload(at, [second])) == {first.name, second.name}

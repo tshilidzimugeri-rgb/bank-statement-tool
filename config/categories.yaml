@@ -21,57 +21,58 @@
 # "Other income (uncategorised)" or "Other expenses (uncategorised)" -
 # check those in the Category Breakdown and add a rule here for them.
 #
+# These are general rules anyone in the business can use - no one's
+# personal setup (names, family, particular properties). Add rules for your
+# own regular payers and payees as needed.
+#
+# VAT is only set to yes where the category's amounts normally include 15%
+# VAT (bank fees, electricity, airtime); fuel is zero-rated, and
+# insurance and interest are left at no. Change a single transaction in
+# its VAT column; claim input tax only with a valid tax invoice.
+#
 # You can also change a single transaction's category by editing its
 # Category cell in the Transactions sheet - reports recalculate, and the
 # edit is kept when more statements are added later.
 
 categories:
   # --- Income -------------------------------------------------------------
-  - name: "Income - CHAMELA transfers"
+  - name: "Interest received"
     type: income
-    match: ["chamela"]
-
-  - name: "Income - other deposits"
-    type: income
-    match: ["payshap payment from", "real time transfer from", "deposit"]
+    vat: no  # interest is an exempt financial service
+    match: ["interest received", "credit interest", "interest on credit"]
 
   # --- Expenses -----------------------------------------------------------
-  - name: "Insurance"
+  - name: "Interest paid"
     type: expense
-    match: ["outsurance", "insurance premium"]
-
-  - name: "Vehicle tracking"
-    type: expense
-    match: ["cartrack"]
-
-  - name: "Levies & property admin"
-    type: expense
-    vat: no  # sectional-title levies are VAT-exempt
-    match: ["huurkor", "roodepark", "ftw001-u141"]
-
-  - name: "Water & electricity"
-    type: expense
-    match: ["water purchase", "electricity", "prepaid elec"]
-
-  - name: "Repairs & maintenance"
-    type: expense
-    match: ["repair", "laptop fix", "laptop battery", "laptop hardrive"]
-
-  - name: "Equipment & purchases"
-    type: expense
-    match: ["takealot", "istore"]
+    vat: no
+    match: ["debit interest", "interest charged", "overdraft interest"]
 
   - name: "Bank charges"
     type: expense
-    match: ["management fee", "fee:", "fee -", "fee-", "fee immediate", "service fee"]
+    match: ["fee:", "fee -", "fee-", "service fee", "management fee", "admin fee", "account fee", "monthly fee",
+            "fee immediate", "bank charge"]
 
-  # --- Not profit: own-account transfers and personal ----------------------
-  # Internet-banking transfers to a masked account number (e.g.
-  # "*****8121188 12H50 *****0420") - another account of the same holder.
-  - name: "Transfers to own accounts"
+  - name: "Water & electricity"
+    type: expense
+    match: ["electricity", "prepaid elec", "eskom", "municipal", "water purchase"]
+
+  - name: "Airtime & data"
+    type: expense
+    match: ["airtime", "prepaid mobile", "data bundle", "vodacom", "mtn prepaid", "mtn airtime", "cell c",
+            "telkom mobile"]
+
+  - name: "Fuel"
+    type: expense
+    vat: no  # petrol and diesel are zero-rated
+    match: ["engen", "sasol", "shell ", "caltex", "astron energy", "totalenergies", "total garage"]
+
+  - name: "Insurance"
+    type: expense
+    vat: no  # check each: short-term cover includes VAT, life cover doesn't
+    match: ["insurance", "insure", "outsurance", "santam", "hollard"]
+
+  # --- Not profit ---------------------------------------------------------
+  # Cash taken out isn't an expense in itself - what it was spent on is.
+  - name: "Cash withdrawals"
     type: transfer
-    match: ["*****"]
-
-  - name: "Family & personal"
-    type: drawings
-    match: ["mom ", "birthday", "bus ticket", "sneakers", "tshilidzi", "wavhudi"]
+    match: ["atm withdrawal", "cash withdrawal", "cash sent"]

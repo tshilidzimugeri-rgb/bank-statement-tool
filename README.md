@@ -23,10 +23,11 @@ your browser at http://localhost:8501:
 The side menu has a page for each job:
 
 - **Upload statements** - drop in one or more statement PDFs (and the
-  password, if they're locked) and click **Read statements**. Each upload
-  makes a **new workbook** (one per bank account) from just the
-  statements uploaded then; statements from earlier uploads never carry
-  over.
+  password, if they're locked) and click **Read statements**. Each
+  statement gets a **workbook of its own**, named by its account and
+  period (e.g. `Account 1234567890 01-03-2026 to 30-09-2026.xlsx`):
+  statements are never combined, and nothing from earlier uploads carries
+  over. The same statement uploaded twice adds nothing twice.
 - **Continue a workbook** - open a workbook you downloaded before; the
   statements you upload next are added to it.
 - **Financials** - income, expenses, profit, charts, and the income
@@ -35,8 +36,9 @@ The side menu has a page for each job:
   (calculated at 15%, never read from the statements).
 - **Checks** - each statement's status, the balance check, rows needing
   review, and uncategorised or suggested categories.
-- **Download** - the Excel workbook with all the report sheets. Keep it:
-  it's how you add next month's statements (Continue a workbook).
+- **Download** - the Excel workbook with all the report sheets, or all of
+  them at once as a .zip. Every cell holds its number (for phones and
+  previews) as well as its formula (so Excel still recalculates edits).
 
 The page works in a temporary folder of its own; it doesn't use the
 `output/` folder (the command-line tool below still does).

@@ -235,6 +235,34 @@ def _read_existing_rows(wb: Workbook) -> list[dict]:
 _UNSAFE_FILENAME = re.compile(r'[<>:"/\\|?*]')
 
 
+def statement_workbook_path(output_dir: Path, account: str | None, period: str | None, source_file: str) -> Path:
+    """A workbook of its own for one statement, e.g. "Account 1699996979
+    01-03-2026 to 30-09-2026.xlsx". Another statement with the same account
+    and period gets " (2)"; the same statement uploaded again gets its own
+    workbook back, where its rows are already (so nothing is added twice)."""
+    who = f"Account {account}" if account else "Unknown account"
+    when = period if period and period != "Unknown" else Path(source_file).stem
+    base = _UNSAFE_FILENAME.sub("-", f"{who} {when}").strip()
+    n = 1
+    while True:
+        path = output_dir / (f"{base}.xlsx" if n == 1 else f"{base} ({n}).xlsx")
+        if not path.exists() or {_statement_id(r.get("Source File") or "")
+                                  for r in read_transactions(path)} <= {_statement_id(source_file)}:
+            return path
+        n += 1
+
+
+def _statement_id(source_file: str) -> str:
+    """The same statement under any file name: uploads are saved as
+    "<content hash>_<name>", with " (statement 2 of 3)" for one of several
+    in a PDF."""
+    m = re.match(r"([0-9a-f]{12})_", source_file)
+    if not m:
+        return source_file
+    part = re.search(r"\(statement \d+ of \d+\)$", source_file)
+    return m.group(1) + (part.group(0) if part else "")
+
+
 def workbook_path_for(output_dir: Path, client: str | None, account: str | None, source_file: str) -> Path:
     """One workbook per bank account, e.g. "FTW Properties (10237421516).xlsx".
     A statement whose account number is unknown gets a workbook of its own,

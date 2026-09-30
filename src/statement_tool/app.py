@@ -16,10 +16,12 @@ from __future__ import annotations
 
 import dataclasses
 import hmac
+import io
 import os
 import shutil
 import sys
 import tempfile
+import zipfile
 from collections import defaultdict
 from pathlib import Path
 
@@ -58,9 +60,9 @@ from statement_tool.excel_writer import (
     report_categories,
     restore_workbook,
     statement_review_row,
+    statement_workbook_path,
     vat201_by_month,
     vat_by_month,
-    workbook_path_for,
 )
 from statement_tool.extract.document import parse_document
 from statement_tool.store import sha256_of_bytes
@@ -127,7 +129,7 @@ def start_fresh() -> None:
     st.session_state.pop("opened", None)
 
 
-def process_upload(name: str, data: bytes, password: str) -> None:
+def process_upload(name: str, data: bytes, password: str, add_to: list[Path]) -> None:
     settings.uploads_dir.mkdir(parents=True, exist_ok=True)
     pdf_path = settings.uploads_dir / f"{sha256_of_bytes(data)[:12]}_{name}"
     pdf_path.write_bytes(data)
@@ -147,19 +149,31 @@ def process_upload(name: str, data: bytes, password: str) -> None:
     if len(results) > 1:
         st.write(f"**{name}** holds {len(results)} statements - each is checked on its own:")
     for result in results:
-        add_statement(result)
+        add_statement(result, add_to)
 
 
-def add_statement(result) -> bool:
-    """Writes one statement to its account's workbook and shows its status.
-    Every readable statement is added; anything that couldn't be confirmed is
+def _workbook_for(result, add_to: list[Path]) -> Path:
+    """Each statement gets a workbook of its own - statements are never
+    combined - unless a workbook of its account was opened under "Continue a
+    workbook" to add it to."""
+    for book in add_to:
+        rows = read_transactions(book) if book.exists() else []
+        if rows and str(rows[0].get("Account") or "") == (result.account_number or "") and result.account_number:
+            return book
+    return statement_workbook_path(settings.output_dir, result.account_number, result.statement_period,
+                                   result.source_file)
+
+
+def add_statement(result, add_to: list[Path]) -> bool:
+    """Writes one statement to its workbook and shows its status. Every
+    readable statement is added; anything that couldn't be confirmed is
     marked REVIEW_REQUIRED rather than turned away. True if added."""
     name = result.source_file
     if not result.ok:
         st.error(f"**{name}** - no transactions could be read, so nothing was added. {result.error}")
         return False
 
-    workbook = workbook_path_for(settings.output_dir, result.client, result.account_number, result.source_file)
+    workbook = _workbook_for(result, add_to)
     try:
         written = append_transactions(workbook, result.transactions, categories,
                                       statement=statement_review_row(result))
@@ -197,9 +211,9 @@ def add_statement(result) -> bool:
 def upload_page() -> None:
     st.header("Upload statements")
     opened = [Path(p) for p in st.session_state.get("opened", []) if Path(p).exists()]
-    st.info("Each upload makes a **new workbook** from just the statements you upload now - statements "
-            "from earlier uploads are never carried over. To add statements to a workbook you downloaded "
-            "before, open it first under **Continue a workbook** in the menu.")
+    st.info("Each statement gets a **workbook of its own** - statements are never combined, and nothing from "
+            "earlier uploads is carried over. Upload as many as you like at once; **Download** gives them all. "
+            "To add statements to a workbook you downloaded before, open it first under **Continue a workbook**.")
     with st.form("upload", clear_on_submit=True):
         files = st.file_uploader("Bank statement PDFs (any bank, digital or scanned)", type="pdf",
                                  accept_multiple_files=True)
@@ -221,7 +235,7 @@ def upload_page() -> None:
         start_fresh()
     for f in files:
         with st.spinner(f"Reading {f.name}..."):
-            process_upload(f.name, f.getvalue(), password)
+            process_upload(f.name, f.getvalue(), password, opened if add_to_opened else [])
     if list_workbooks(settings.output_dir):
         st.info("Done. Use the menu for **Financials**, **VAT**, **Checks** and **Download**.")
 
@@ -415,6 +429,16 @@ def checks_page(rows: list[dict], selected: Path) -> None:
 
 def download_page(rows: list[dict], selected: Path) -> None:
     st.header("Download")
+    books = list_workbooks(settings.output_dir)
+    if len(books) > 1:
+        bundle = io.BytesIO()
+        with zipfile.ZipFile(bundle, "w", zipfile.ZIP_DEFLATED) as z:
+            for book in books:
+                z.write(book, book.name)
+        st.download_button(f"Download all {len(books)} workbooks (.zip)", data=bundle.getvalue(),
+                           file_name="statement workbooks.zip", mime="application/zip", type="primary")
+        st.caption("One workbook per statement. Or download them one at a time - choose one under "
+                   "**Workbook** in the side menu:")
     periods = sorted({str(r.get("Statement Period")) for r in rows if r.get("Statement Period")})
     st.write(f"**{selected.stem}**: {len(rows)} transactions from {len(periods)} statement period(s): "
              f"{', '.join(periods)}.")
@@ -423,7 +447,7 @@ def download_page(rows: list[dict], selected: Path) -> None:
         data=selected.read_bytes(),
         file_name=selected.name,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        type="primary",
+        type="primary" if len(books) <= 1 else "secondary",
     )
     st.caption("Sheets: Review, Monthly Summary, Income Statement, Cash Flow, Category Breakdown, VAT Summary, "
                "VAT201, one VAT sheet per month, Transactions and Categories. Keep it: to add next month's statements, "
@@ -446,7 +470,7 @@ def choose_account() -> Path | None:
             st.caption("No workbook yet - upload statements to start one.")
             return None
         last = st.session_state.get("last_workbook")
-        return st.selectbox("Account", books, index=next((i for i, b in enumerate(books) if str(b) == last), 0),
+        return st.selectbox("Workbook", books, index=next((i for i, b in enumerate(books) if str(b) == last), 0),
                             format_func=lambda p: p.stem)
 
 
