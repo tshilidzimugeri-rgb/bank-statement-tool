@@ -47,6 +47,7 @@ from statement_tool import config as config_mod  # noqa: E402
 from statement_tool.categorize import load_categories
 from statement_tool.checks import workbook_gaps
 from statement_tool.excel_writer import (
+    VAT201_FIELDS,
     VAT_RATE,
     MixedAccountsError,
     WorkbookLockedError,
@@ -57,6 +58,7 @@ from statement_tool.excel_writer import (
     report_categories,
     restore_workbook,
     statement_review_row,
+    vat201_by_month,
     vat_by_month,
     workbook_path_for,
 )
@@ -316,14 +318,32 @@ def vat_page(rows: list[dict]) -> None:
     if not months:
         st.info("No income or expense transactions yet.")
         return
-    table = pd.DataFrame(months).set_index("Month")
-    totals = table.sum().round(2)
+    table = pd.DataFrame(months).set_index("Month")[
+        ["Income", "VAT on income", "Expenses", "VAT on expenses", "VAT payable"]]
+    totals = table.sum().round(2)  # added up unrounded, as the workbook does
+    table = table.round(2)
     c1, c2, c3 = st.columns(3)
     c1.metric("VAT on income", f"R {totals['VAT on income']:,.2f}")
     c2.metric("VAT on expenses", f"R {totals['VAT on expenses']:,.2f}")
     c3.metric("VAT payable", f"R {totals['VAT payable']:,.2f}")
     table.loc["TOTAL"] = totals
     st.dataframe(table, use_container_width=True)
+
+    st.subheader("VAT201 return")
+    st.caption("The SARS VAT201 fields that bank statements can support. Choose the months of your VAT period "
+               "(two months for category A or B). Claim input tax only where you hold a valid tax invoice; "
+               "capital goods belong in field 14, and income without VAT goes in field 2 (zero-rated) or 3 "
+               "(exempt).")
+    per_month = vat201_by_month(months)
+    names = [m["Month"] for m in per_month]
+    period = st.multiselect("VAT period (months)", names, default=names[-2:] if len(names) > 1 else names)
+    chosen = [m for m in per_month if m["Month"] in period]
+    labels = {field: label for field, label, _ in VAT201_FIELDS}
+    st.dataframe(pd.DataFrame(
+        [{"Field": field, "Description": labels[field],
+          "Amount (R)": round(sum(m[field] for m in chosen), 2)} for field in labels]),
+        hide_index=True, use_container_width=True)
+
     with st.expander("Transactions and their VAT setting"):
         df = _frame(rows)
         st.dataframe(df[df["Type"].isin(["income", "expense"])][
@@ -406,7 +426,7 @@ def download_page(rows: list[dict], selected: Path) -> None:
         type="primary",
     )
     st.caption("Sheets: Review, Monthly Summary, Income Statement, Cash Flow, Category Breakdown, VAT Summary, "
-               "one VAT sheet per month, Transactions and Categories. Keep it: to add next month's statements, "
+               "VAT201, one VAT sheet per month, Transactions and Categories. Keep it: to add next month's statements, "
                "open it under **Continue a workbook**.")
 
 

@@ -126,7 +126,7 @@ def test_reports_created_in_order_with_statement_balances(tmp_path):
     )
     wb = load_workbook(book)
     assert wb.sheetnames == [
-        "Review", MONTHLY_SHEET, INCOME_SHEET, CASHFLOW_SHEET, "Category Breakdown", VAT_SUMMARY_SHEET,
+        "Review", MONTHLY_SHEET, INCOME_SHEET, CASHFLOW_SHEET, "Category Breakdown", VAT_SUMMARY_SHEET, "VAT201",
         "Mar 2026", "Apr 2026", TRANSACTIONS_SHEET, "Categories",
     ]
 

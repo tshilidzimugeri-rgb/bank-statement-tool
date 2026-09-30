@@ -72,10 +72,11 @@ VAT_RATE = 0.15
 # per-client sheet, dropped if an older workbook still has it).
 GENERATED_SHEETS = (
     MONTHLY_SHEET, INCOME_SHEET, CASHFLOW_SHEET, BREAKDOWN_SHEET, VAT_SUMMARY_SHEET, CATEGORIES_SHEET, "Summary",
-    REVIEW_SHEET,
+    REVIEW_SHEET, "VAT201",
 )
 # Month sheets go between the reports and Transactions, in date order.
-REPORT_SHEET_ORDER = (REVIEW_SHEET, MONTHLY_SHEET, INCOME_SHEET, CASHFLOW_SHEET, BREAKDOWN_SHEET, VAT_SUMMARY_SHEET)
+REPORT_SHEET_ORDER = (REVIEW_SHEET, MONTHLY_SHEET, INCOME_SHEET, CASHFLOW_SHEET, BREAKDOWN_SHEET, VAT_SUMMARY_SHEET,
+                      "VAT201")
 TRAILING_SHEET_ORDER = (TRANSACTIONS_SHEET, CATEGORIES_SHEET)
 TABLE_NAME = "TransactionsTable"
 
@@ -433,6 +434,7 @@ def append_transactions(
         _write_category_breakdown(wb, rows, reported)
         month_totals = _write_month_vat_sheets(wb, rows, reported, months)
         _write_vat_summary(wb, month_totals)
+        _write_vat201(wb, month_totals)
         _write_categories_sheet(wb, reported)
 
     month_sheets = [n for n in wb.sheetnames if MONTH_SHEET_RE.match(n)]  # created in date order
@@ -975,6 +977,59 @@ def _write_month_vat_sheets(
     return totals
 
 
+# The SARS VAT201 fields the bank statements can support, each worked out
+# from the VAT Summary sheet's columns (B income, D VAT on income, G VAT on
+# expenses) of the month's row. Amounts with VAT include it, as on the
+# return; VAT is the 15/115 part of them.
+VAT201_SHEET = "VAT201"
+VAT201_FIELDS = [
+    ("1", "Standard-rated supplies (income with VAT), incl VAT", "=VS!D{r}*(1+{rate})/{rate}"),
+    ("2 / 3", "Income without VAT - zero-rated (field 2) or exempt (field 3): put it in the right one",
+     "=VS!B{r}-VS!D{r}*(1+{rate})/{rate}"),
+    ("4", "Output tax on field 1", "=VS!D{r}"),
+    ("13", "Total output tax", "=VS!D{r}"),
+    ("15", "Input tax on goods and services (capital goods belong in field 14)", "=VS!G{r}"),
+    ("19", "Total input tax", "=VS!G{r}"),
+    ("20", "VAT payable (negative: refundable)", "=VS!D{r}-VS!G{r}"),
+]
+
+
+def vat201_by_month(months: list[dict]) -> list[dict]:
+    """The VAT201 fields per month from vat_by_month's figures, as on the
+    VAT201 sheet (not rounded)."""
+    return [{"Month": m["Month"], "1": m["Income with VAT"], "2 / 3": m["Income"] - m["Income with VAT"],
+             "4": m["VAT on income"], "13": m["VAT on income"], "15": m["VAT on expenses"],
+             "19": m["VAT on expenses"], "20": m["VAT on income"] - m["VAT on expenses"]} for m in months]
+
+
+def _write_vat201(wb: Workbook, months: list[MonthVatTotals]) -> None:
+    ws = wb.create_sheet(VAT201_SHEET)
+    ws["A1"] = "VAT201 - figures for the SARS return, per month"
+    ws["A1"].font = TITLE
+    ws["A2"] = (f"CALCULATED at {VAT_RATE:.0%} from each transaction's VAT Yes/No - not read from the statements. "
+                "Add up the months of your VAT period (e.g. two months for category A or B). Only fields bank "
+                "statements can support are here; claim input tax only where you hold a valid tax invoice.")
+    ws["A2"].font = Font(italic=True, color="666666")
+    header_row = 4
+    _write_header_row(ws, header_row, ["Field", "Description", *(m.sheet for m in months), "Total"])
+    ws.column_dimensions["A"].width = 8
+    ws.column_dimensions["B"].width = 70
+    for col in range(3, len(months) + 4):
+        ws.column_dimensions[get_column_letter(col)].width = 14
+    summary = f"'{VAT_SUMMARY_SHEET}'"
+    for r, (field, label, formula) in enumerate(VAT201_FIELDS, start=header_row + 1):
+        ws.cell(row=r, column=1, value=field).font = BOLD
+        ws.cell(row=r, column=2, value=label)
+        for i in range(len(months)):
+            # The VAT Summary lists the months from its row 5, in this order.
+            cell_formula = formula.format(r=5 + i, rate=f"{VAT_RATE:g}").replace("VS!", f"{summary}!")
+            _money(ws, r, 3 + i, cell_formula, bold=field == "20")
+        first, last = get_column_letter(3), get_column_letter(2 + len(months))
+        cell = _money(ws, r, 3 + len(months), f"=SUM({first}{r}:{last}{r})", bold=True)
+        cell.fill = TOTAL_FILL
+    ws.freeze_panes = ws.cell(row=header_row + 1, column=3)
+
+
 def _write_vat_summary(wb: Workbook, months: list[MonthVatTotals]) -> None:
     ws = wb.create_sheet(VAT_SUMMARY_SHEET)
     ws["A1"] = "Income, Expenses and VAT per Month"
@@ -1074,7 +1129,9 @@ def read_reviews(workbook_path: Path) -> list[dict]:
 def vat_by_month(rows: list[dict], categories: list[Category]) -> list[dict]:
     """Per month, the figures the VAT Summary sheet calculates: income and
     expenses, and the VAT in those whose VAT cell is Yes (calculated at
-    VAT_RATE, never read from the statements)."""
+    VAT_RATE, never read from the statements). Not rounded - like the
+    sheet's formulas - so totals over several months come out the same as
+    the workbook's; round only to show them."""
     types = {c.name: c.type for c in report_categories(categories, rows)}
     months: dict[str, dict] = {}
     for row in rows:
@@ -1084,17 +1141,19 @@ def vat_by_month(rows: list[dict], categories: list[Category]) -> list[dict]:
         amount = (row.get("Credit") or 0) - (row.get("Debit") or 0)
         if kind == "expense":
             amount = -amount
-        vat = amount - amount / (1 + VAT_RATE) if row.get("VAT") == "Yes" else 0.0
+        with_vat = row.get("VAT") == "Yes"
         m = months.setdefault(row["Month"], {"Month": row["Month"], "Income": 0.0, "VAT on income": 0.0,
-                                             "Expenses": 0.0, "VAT on expenses": 0.0})
+                                             "Expenses": 0.0, "VAT on expenses": 0.0, "Income with VAT": 0.0})
         label = "Income" if kind == "income" else "Expenses"
         m[label] += amount
-        m[f"VAT on {label.lower()}"] += vat
+        m[f"VAT on {label.lower()}"] += amount - amount / (1 + VAT_RATE) if with_vat else 0.0
+        if with_vat and kind == "income":
+            m["Income with VAT"] += amount
     out = []
     for month in sorted(months):
         m = months[month]
         m["VAT payable"] = m["VAT on income"] - m["VAT on expenses"]
-        out.append({k: round(v, 2) if isinstance(v, float) else v for k, v in m.items()})
+        out.append(m)
     return out
 
 

@@ -20,7 +20,8 @@ from synthetic import build, generate, render_pdf  # noqa: E402
 from statement_tool import config as config_mod  # noqa: E402
 from statement_tool.categorize import load_categories  # noqa: E402
 from statement_tool.excel_writer import (  # noqa: E402
-    VAT_RATE, append_transactions, read_transactions, report_categories, statement_review_row,
+    VAT_RATE, append_transactions, read_transactions, report_categories, statement_review_row, vat201_by_month,
+    vat_by_month,
 )
 from statement_tool.extract.document import parse_document  # noqa: E402
 
@@ -124,6 +125,24 @@ def test_report_formulas_match_independent_totals(tmp_path):
     for r in breakdown.iter_rows(min_row=4, values_only=True):
         if r[0] in by_category:
             assert close(r[3], by_category[r[0]][0]) and close(r[4], by_category[r[0]][1]), r[0]
+
+    # VAT201: Excel's figures equal the upload page's, and follow the return's
+    # own arithmetic (field 1 includes VAT, field 4 is its 15/115 part).
+    vat201 = wb["VAT201"]
+    header = [c.value for c in vat201[4]]
+    fields = {r[0]: r for r in vat201.iter_rows(min_row=5, values_only=True) if r[0]}
+    page = {m["Month"]: m for m in vat201_by_month(vat_by_month(rows, categories))}
+    checked = 0
+    for col, label in enumerate(header[2:-1], start=2):
+        month = next(m for m in page if _month_label(m) == label)
+        for field in ("1", "2 / 3", "4", "13", "15", "19", "20"):
+            assert close(fields[field][col], page[month][field]), (label, field)
+        assert close(fields["4"][col], fields["1"][col] * VAT_RATE / (1 + VAT_RATE)), label
+        assert close(fields["1"][col] + fields["2 / 3"][col], income[month]), label
+        assert close(fields["20"][col], vat_income[month] - vat_expenses[month]), label
+        checked += 1
+    assert checked == len(income)
+    assert close(fields["20"][-1], sum(vat_income.values()) - sum(vat_expenses.values()))
 
 
 def _month_label(month: str) -> str:
