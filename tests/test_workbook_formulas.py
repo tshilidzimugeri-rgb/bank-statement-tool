@@ -80,7 +80,7 @@ def test_report_formulas_match_independent_totals(tmp_path):
                     assert (ours == excel or (ours in (None, "") and excel in (None, ""))
                             or abs(ours - excel) <= 1e-9 * max(1, abs(excel))), (ws.title, cell.coordinate, ours, excel)
                     compared += 1
-    assert compared > 500
+    assert compared > 300
 
     rows = read_transactions(book)
     types = {c.name: c.type for c in report_categories(categories, rows)}

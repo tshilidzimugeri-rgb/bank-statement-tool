@@ -564,12 +564,16 @@ def _write_transactions_sheet(wb: Workbook, rows: list[dict]) -> None:
 # --- Shared report inputs ------------------------------------------------------
 
 def report_categories(configured: list[Category], rows: list[dict]) -> list[Category]:
-    """Configured categories (plus catch-alls), plus any category typed into
-    the sheet by hand that isn't configured - typed as income or expense by
-    which way its money mostly flows, so it still lands in the reports.
+    """The categories the workbook's transactions are in: configured ones
+    (and the catch-alls), plus any typed into the sheet by hand that isn't
+    configured - typed as income or expense by which way its money mostly
+    flows, so it still lands in the reports. A configured category no
+    transaction is in isn't reported: the reports show only what's on the
+    statements.
     """
-    categories = with_fallbacks(configured)
-    known = {c.name for c in categories}
+    used = {row.get("Category") for row in rows}
+    categories = [c for c in with_fallbacks(configured) if c.name in used]
+    known = {c.name for c in with_fallbacks(configured)}
     extra: dict[str, float] = {}
     for row in rows:
         name = row.get("Category")
