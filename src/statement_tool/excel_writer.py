@@ -53,6 +53,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 from .categorize import UNCATEGORISED_EXPENSE, UNCATEGORISED_INCOME, Category, categorize, with_fallbacks
 from .learn import CategoryLearner
 from .models import Transaction
+from .xl_values import add_cached_values
 
 TRANSACTIONS_SHEET = "Transactions"
 MONTHLY_SHEET = "Monthly Summary"
@@ -472,6 +473,12 @@ def _save_safely(wb: Workbook, workbook_path: Path) -> None:
     """
     tmp_path = workbook_path.with_name(f"~{workbook_path.stem}.saving.xlsx")
     wb.save(tmp_path)
+    try:
+        # Each formula's result saved beside it, so viewers that don't
+        # calculate (phone and e-mail previews) show the numbers too.
+        add_cached_values(tmp_path)
+    except Exception:  # never lose a save over it: Excel calculates the formulas itself
+        pass
     try:
         if workbook_path.exists():
             backups = workbook_path.parent / "backups"

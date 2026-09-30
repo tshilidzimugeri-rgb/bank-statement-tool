@@ -68,6 +68,20 @@ def test_report_formulas_match_independent_totals(tmp_path):
     _excel_recalculate(book, calculated)
     wb = load_workbook(calculated, data_only=True)
 
+    # The values the workbook itself stores beside its formulas (for viewers
+    # that don't calculate) are exactly Excel's, in every formula cell.
+    formulas, stored = load_workbook(book), load_workbook(book, data_only=True)
+    compared = 0
+    for ws in formulas.worksheets:
+        for row in ws.iter_rows():
+            for cell in row:
+                if isinstance(cell.value, str) and cell.value.startswith("="):
+                    ours, excel = stored[ws.title][cell.coordinate].value, wb[ws.title][cell.coordinate].value
+                    assert (ours == excel or (ours in (None, "") and excel in (None, ""))
+                            or abs(ours - excel) <= 1e-9 * max(1, abs(excel))), (ws.title, cell.coordinate, ours, excel)
+                    compared += 1
+    assert compared > 500
+
     rows = read_transactions(book)
     types = {c.name: c.type for c in report_categories(categories, rows)}
     money_in, money_out = defaultdict(float), defaultdict(float)

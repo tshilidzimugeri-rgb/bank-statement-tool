@@ -83,6 +83,22 @@ def test_workbook_from_an_earlier_version_still_recognises_its_statements(tmp_pa
     assert append_transactions(book, rows, CATEGORIES).skipped_duplicates == 2
 
 
+def test_workbook_stores_values_beside_its_formulas(tmp_path):
+    # Viewers that don't calculate (phone previews) read the stored values.
+    book = tmp_path / "out.xlsx"
+    append_transactions(book, [_t("2026-03-01", "RENT", credit=1000.0, balance=1100.0),
+                               _t("2026-03-20", "OUTSURANCE", debit=200.0, balance=900.0)], CATEGORIES)
+    formulas, values = load_workbook(book), load_workbook(book, data_only=True)
+    monthly = next(r for r in values[MONTHLY_SHEET].iter_rows(values_only=True) if r[0] == "2026-03")
+    assert monthly[2:5] == (1000.0, 200.0, 800.0)  # money in, money out, net
+    assert formulas[MONTHLY_SHEET]["C4"].value.startswith("=SUMIFS(")  # the formulas are still there
+    # Every formula has its value stored, except those meant to show a blank ("").
+    empty = [(ws.title, c.coordinate) for ws in formulas.worksheets for row in ws.iter_rows() for c in row
+             if isinstance(c.value, str) and c.value.startswith("=") and '""' not in c.value
+             and values[ws.title][c.coordinate].value is None]
+    assert empty == []
+
+
 def test_rows_sorted_by_date_and_categorised(tmp_path):
     book = tmp_path / "out.xlsx"
     append_transactions(book, [_t("2026-04-02", "OUTSURANCE", debit=5.0, balance=10.0)], CATEGORIES)
