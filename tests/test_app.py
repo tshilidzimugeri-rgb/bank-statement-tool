@@ -93,6 +93,6 @@ def test_each_upload_makes_a_new_workbook_and_continuing_one_is_its_own_page(tmp
     assert _sources(_upload(at, [second])) == {first.name, second.name}
 
     # Every page of the menu shows this workbook.
-    for page in ("Financials", "VAT", "Checks", "Download"):
+    for page in ("Overview", "Monthly", "VAT", "Checks", "Download"):
         _go(at, page)
         assert at.header[0].value.startswith(page)

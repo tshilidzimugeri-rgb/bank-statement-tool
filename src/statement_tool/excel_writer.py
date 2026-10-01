@@ -53,6 +53,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 from .categorize import UNCATEGORISED_EXPENSE, UNCATEGORISED_INCOME, Category, categorize, with_fallbacks
 from .learn import CategoryLearner
 from .models import Transaction
+from .periods import periods as periods_of
 from .xl_values import add_cached_values
 
 TRANSACTIONS_SHEET = "Transactions"
@@ -73,11 +74,11 @@ VAT_RATE = 0.15
 # per-client sheet, dropped if an older workbook still has it).
 GENERATED_SHEETS = (
     MONTHLY_SHEET, INCOME_SHEET, CASHFLOW_SHEET, BREAKDOWN_SHEET, VAT_SUMMARY_SHEET, CATEGORIES_SHEET, "Summary",
-    REVIEW_SHEET, "VAT201",
+    REVIEW_SHEET, "VAT201", "Period Summary",
 )
 # Month sheets go between the reports and Transactions, in date order.
-REPORT_SHEET_ORDER = (REVIEW_SHEET, MONTHLY_SHEET, INCOME_SHEET, CASHFLOW_SHEET, BREAKDOWN_SHEET, VAT_SUMMARY_SHEET,
-                      "VAT201")
+REPORT_SHEET_ORDER = (REVIEW_SHEET, MONTHLY_SHEET, "Period Summary", INCOME_SHEET, CASHFLOW_SHEET, BREAKDOWN_SHEET,
+                      VAT_SUMMARY_SHEET, "VAT201")
 TRAILING_SHEET_ORDER = (TRANSACTIONS_SHEET, CATEGORIES_SHEET)
 TABLE_NAME = "TransactionsTable"
 
@@ -241,7 +242,8 @@ def statement_workbook_path(output_dir: Path, account: str | None, period: str |
     and period gets " (2)"; the same statement uploaded again gets its own
     workbook back, where its rows are already (so nothing is added twice)."""
     who = f"Account {account}" if account else "Unknown account"
-    when = period if period and period != "Unknown" else Path(source_file).stem
+    # Uploads are saved as "<content hash>_<name>": the name without the hash.
+    when = period if period and period != "Unknown" else re.sub(r"^[0-9a-f]{12}_", "", Path(source_file).stem)
     base = _UNSAFE_FILENAME.sub("-", f"{who} {when}").strip()
     n = 1
     while True:
@@ -464,6 +466,7 @@ def append_transactions(
         month_totals = _write_month_vat_sheets(wb, rows, reported, months)
         _write_vat_summary(wb, month_totals)
         _write_vat201(wb, month_totals)
+        _write_period_summary(wb, months, income_rows)
         _write_categories_sheet(wb, reported)
 
     month_sheets = [n for n in wb.sheetnames if MONTH_SHEET_RE.match(n)]  # created in date order
@@ -774,6 +777,57 @@ def _write_monthly_summary(
         chart.set_categories(Reference(ws, min_col=1, min_row=header_row + 1, max_row=last_month_row))
         chart.height, chart.width = 8, 18
         ws.add_chart(chart, f"A{total_row + 3}")
+
+
+# --- Period Summary -----------------------------------------------------------------
+
+PERIOD_SHEET = "Period Summary"
+
+
+def _write_period_summary(wb: Workbook, months: list[str], income: IncomeStatementRows) -> None:
+    """Each month, quarter and financial year (Mar-Feb) side by side, each a
+    sum of the Monthly Summary, Income Statement and VAT Summary rows of its
+    months - so edits flow through here too."""
+    ws = wb.create_sheet(PERIOD_SHEET)
+    ws["A1"] = "Period Summary - months, quarters and financial years (March to February)"
+    ws["A1"].font = TITLE
+    ws["A2"] = ("A period marked 'partial' has transactions for only some of its months. VAT is calculated at "
+                f"{VAT_RATE:.0%}, not read from the statements.")
+    ws["A2"].font = Font(italic=True, color="666666")
+    header_row = 4
+    labels = ["Period", "Months", "Opening Balance", "Money In", "Money Out", "Closing Balance", "Income",
+              "Expenses", "Net Profit", "VAT Payable (calc.)", "Transactions", "Rows to Review"]
+    _write_header_row(ws, header_row, labels)
+    for col, width in enumerate([44, 9, 16, 15, 15, 16, 15, 15, 15, 17, 13, 14], start=1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+    index = {m: i for i, m in enumerate(months)}
+    ms, inc, vs = f"'{MONTHLY_SHEET}'!", f"'{INCOME_SHEET}'!", f"'{VAT_SUMMARY_SHEET}'!"
+    r = header_row
+    previous_kind = None
+    for period in periods_of(months):
+        r += 1 if period.kind == previous_kind or previous_kind is None else 2  # a gap between kinds
+        previous_kind = period.kind
+        first, last = index[period.months[0]], index[period.months[-1]]
+        m1, m2 = 4 + first, 4 + last  # Monthly Summary rows (from row 4)
+        c1, c2 = get_column_letter(income.first_month_col + first), get_column_letter(income.first_month_col + last)
+        v1, v2 = 5 + first, 5 + last  # VAT Summary rows (from row 5)
+        label = period.label + (f" - partial: {len(period.months)} of {period.length} months" if period.partial else "")
+        ws.cell(row=r, column=1, value=label).font = BOLD if period.kind != "month" else Font()
+        ws.cell(row=r, column=2, value=len(period.months))
+        _money(ws, r, 3, f"={ms}B{m1}")
+        _money(ws, r, 4, f"=SUM({ms}C{m1}:C{m2})")
+        _money(ws, r, 5, f"=SUM({ms}D{m1}:D{m2})")
+        _money(ws, r, 6, f"={ms}F{m2}")
+        _money(ws, r, 7, f"=SUM({inc}{c1}{income.total_income}:{c2}{income.total_income})")
+        _money(ws, r, 8, f"=SUM({inc}{c1}{income.total_expenses}:{c2}{income.total_expenses})")
+        _money(ws, r, 9, f"=G{r}-H{r}", bold=True)
+        _money(ws, r, 10, f"=SUM({vs}J{v1}:J{v2})")
+        ws.cell(row=r, column=11, value=f"=SUM({ms}H{m1}:H{m2})")
+        ws.cell(row=r, column=12, value=f"=SUM({ms}I{m1}:I{m2})")
+        if period.kind in ("all", "year"):
+            for col in range(1, 13):
+                ws.cell(row=r, column=col).fill = TOTAL_FILL
+    ws.freeze_panes = ws.cell(row=header_row + 1, column=2)
 
 
 # --- Cash Flow --------------------------------------------------------------------

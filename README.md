@@ -22,18 +22,37 @@ your browser at http://localhost:8501:
 
 The side menu has a page for each job:
 
-- **Upload statements** - drop in one or more statement PDFs (and the
-  password, if they're locked) and click **Read statements**. Each
-  statement gets a **workbook of its own**, named by its account and
-  period (e.g. `Account 1234567890 01-03-2026 to 30-09-2026.xlsx`):
-  statements are never combined, and nothing from earlier uploads carries
-  over. The same statement uploaded twice adds nothing twice.
+- **Upload statements** - drop in statement PDFs (and the password, if
+  they're locked) and/or statement **spreadsheets** (Excel .xlsx or CSV),
+  and click **Read statements**. Each statement gets a **workbook of its
+  own**, named by its account and period (e.g. `Account 1234567890
+  01-03-2026 to 30-09-2026.xlsx`): statements are never combined, and
+  nothing from earlier uploads carries over. The same statement uploaded
+  twice adds nothing twice.
 - **Continue a workbook** - open a workbook you downloaded before; the
   statements you upload next are added to it.
-- **Financials** - income, expenses, profit, charts, and the income
-  statement by category and month.
-- **VAT** - VAT on income and expenses per month, and VAT payable
-  (calculated at 15%, never read from the statements).
+- **Overview** - opening and closing balance, money in and out, income,
+  expenses, profit, VAT, charts, and the income statement by category.
+- **Monthly** - one line per month (balances, money in and out, income,
+  expenses, profit, VAT), and any one month in detail.
+- **VAT** - VAT on income and expenses per month, and the SARS VAT201
+  fields for your VAT category (A, B or C) and period (calculated at 15%,
+  never read from the statements).
+
+Overview, Monthly and VAT follow the **Reporting period** chosen in the
+side menu: all months, a financial year (March to February), a quarter, a
+month, or a custom range of months. The workbook's **Period Summary**
+sheet has every month, quarter and financial year side by side.
+
+**Spreadsheets** can be messy: titles and notes above the table, totals
+below it, extra columns, headings in different words, amounts typed as
+text ("R1 234.56", "1 234,56", "(50.00)"), debit and credit columns or
+one signed amount or an amount with a Cr/Dr column. The table is found by
+its header row. Every row is checked against the running balance in the
+file's order, and the file is read twice independently (openpyxl and the
+.xlsx's XML directly; for CSV the csv module and a parser of its own).
+Nothing is guessed: a row that doesn't add up is kept as in the file and
+marked for review. Older .xls files: save them as .xlsx first.
 - **Checks** - each statement's status, the balance check, rows needing
   review, and uncategorised or suggested categories.
 - **Download** - the Excel workbook with all the report sheets, or all of

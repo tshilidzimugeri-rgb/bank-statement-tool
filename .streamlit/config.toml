@@ -1,0 +1,15 @@
+# The upload page's look: a light, professional theme (navy accents on
+# white, grey panels), used both on this computer and online.
+[theme]
+base = "light"
+primaryColor = "#1F3A68"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F2F4F8"
+textColor = "#1B2430"
+font = "sans serif"
+
+[client]
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false

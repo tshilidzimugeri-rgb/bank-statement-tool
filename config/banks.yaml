@@ -48,6 +48,7 @@ banks:
       - "first national bank"
       - "fnb.co.za"
       - "www.fnb.co.za"
+      - "fnb bank statement"  # how spreadsheet exports title themselves
     period_patterns:
       - "statement period[:\\s]+([0-9A-Za-z /.\\-]+to[0-9A-Za-z /.\\-]+)"
       - "statement date[:\\s]+([0-9A-Za-z /.\\-]+)"
