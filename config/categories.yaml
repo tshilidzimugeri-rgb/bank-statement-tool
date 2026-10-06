@@ -1,78 +1,162 @@
 # Categorises transactions for the financial reports (Income Statement,
-# Category Breakdown, Cash Flow).
+# Category Breakdown, Cash Flow, VAT).
 #
 # Each entry is one category:
-#   name  - shown in the reports
-#   type  - one of:
-#             income    - counts as income in the Income Statement
-#             expense   - counts as an expense in the Income Statement
-#             transfer  - money moved between your own accounts; left out of
-#                         profit, shown separately in the Cash Flow
-#             drawings  - personal/family money taken out of the business;
-#                         left out of profit, shown separately in the Cash Flow
-#   match - case-insensitive text to look for in the transaction description
-#   vat   - optional, yes/no: whether amounts in this category include 15%
-#           VAT. Defaults to yes for income and expense categories. You can
-#           still change it for a single transaction in the VAT column of
-#           the Transactions sheet.
+#   name      - shown in the reports
+#   type      - income    - counts as income in the Income Statement
+#               expense   - counts as an expense in the Income Statement
+#               transfer  - money moved between own accounts, cash, loans,
+#                           tax: left out of profit, shown in the Cash Flow
+#               drawings  - personal money taken out of the business
+#   direction - optional: in, out or any. Income rules apply to money in and
+#               expense rules to money out unless set otherwise, so a deposit
+#               mentioning "municipal" isn't counted as an electricity expense.
+#   match     - case-insensitive text to look for in the transaction description
+#   vat       - yes / no / if registered: whether amounts include 15% VAT.
+#               "if registered" follows the VAT-registered switch on the
+#               upload page (customer payments include VAT only for a
+#               VAT-registered business). A business that isn't registered
+#               claims no VAT at all. Change a single transaction in the VAT
+#               column of the Transactions sheet.
 #
-# The FIRST category whose match list hits wins, so put specific entries
-# above general ones. Anything that matches nothing lands in
-# "Other income (uncategorised)" or "Other expenses (uncategorised)" -
-# check those in the Category Breakdown and add a rule here for them.
+# The FIRST category whose match list hits wins, so specific entries come
+# before general ones (bank fees first: "Fee: Uber" is a bank fee). Anything
+# that matches nothing lands in "Other income/expenses (uncategorised)" - type
+# a category over it in the workbook, and similar transactions are suggested
+# the same category from then on.
 #
-# These are general rules anyone in the business can use - no one's
-# personal setup (names, family, particular properties). Add rules for your
-# own regular payers and payees as needed.
-#
-# VAT is only set to yes where the category's amounts normally include 15%
-# VAT (bank fees, electricity, airtime); fuel is zero-rated, and
-# insurance and interest are left at no. Change a single transaction in
-# its VAT column; claim input tax only with a valid tax invoice.
-#
-# You can also change a single transaction's category by editing its
-# Category cell in the Transactions sheet - reports recalculate, and the
-# edit is kept when more statements are added later.
+# General rules for South African statements - no one's personal setup.
+# FNB, Capitec and Standard Bank call moves between your own accounts
+# "transfer" and payments to others "payment"; Capitec adds its own category
+# to card purchases ("... Groceries", "... Takeaways"), which is used here.
+# Patterns avoid accidental hits ("fee" is in "coffee", "rent" in "current").
 
 categories:
-  # --- Income -------------------------------------------------------------
+  # --- Bank fees (first) --------------------------------------------------
+  - name: "Bank charges"
+    type: expense
+    match: ["fee:", "fee -", "fee-", "fees", "service fee", "account fee", "admin fee", "management fee",
+            "fee payshap", "fee banking", "fee electricity", "fee electronic", "fee immediate", "fee prepaid",
+            "notification fee", "sms fee", "cash handling", "unpaid no funds", "item unpaid", "excess item",
+            "bank charge", "card replacement", "statement fee", "payment history", "membership fee", "item fee"]
+
+  # --- Money back ---------------------------------------------------------
+  - name: "Refunds & reversals"
+    type: income
+    vat: no
+    match: ["reversal", "refund", "unpaid not provided", "magtape unpaid", "dispute", "rev excess", "returned debit",
+            "unpaid debit"]
+
+  # --- Savings and own accounts (before interest: "Live Better Interest Sweep") ---
+  - name: "Savings & own-account transfers"
+    type: transfer
+    match: ["live better", "round up", "round-up", "savings", "sweep", "transfer from", "transfer to",
+            "transfer received", "ib transfer", "between accounts", "own account", "inter account"]
+
+  # --- Interest -----------------------------------------------------------
   - name: "Interest received"
     type: income
     vat: no  # interest is an exempt financial service
-    match: ["interest received", "credit interest", "interest on credit"]
+    match: ["interest"]
 
-  # --- Expenses -----------------------------------------------------------
   - name: "Interest paid"
     type: expense
     vat: no
-    match: ["debit interest", "interest charged", "overdraft interest"]
+    match: ["interest", "on debit balance"]
 
-  - name: "Bank charges"
-    type: expense
-    match: ["fee:", "fee -", "fee-", "service fee", "management fee", "admin fee", "account fee", "monthly fee",
-            "fee immediate", "bank charge"]
+  # --- Not profit: tax, savings, own accounts, loans, cash ------------------
+  - name: "Tax payments (SARS)"
+    type: transfer
+    match: ["sars", "south african revenue", "efiling"]
 
-  - name: "Water & electricity"
-    type: expense
-    match: ["electricity", "prepaid elec", "eskom", "municipal", "water purchase"]
+  - name: "Loan & finance repayments"
+    type: transfer
+    direction: out
+    match: ["loan", "wesbank", "mfc ", "vehicle finance", "toyota financial", "bmw finance", "instalment",
+            "credit card payment", "absa vehicle"]
 
-  - name: "Airtime & data"
-    type: expense
-    match: ["airtime", "prepaid mobile", "data bundle", "vodacom", "mtn prepaid", "mtn airtime", "cell c",
-            "telkom mobile"]
+  - name: "Cash withdrawals & sends"
+    type: transfer
+    direction: out
+    match: ["atm withdrawal", "cash withdrawal", "cash sent", "cash send", "send money", "dr send", "ewallet", "atm cash", "atm local", "cash atm"]
 
-  - name: "Fuel"
+  # --- Expenses -----------------------------------------------------------
+  - name: "Salaries & wages"
     type: expense
-    vat: no  # petrol and diesel are zero-rated
-    match: ["engen", "sasol", "shell ", "caltex", "astron energy", "totalenergies", "total garage"]
+    vat: no
+    match: ["salary", "salaries", "wages", "payroll"]
+
+  - name: "Medical & health"
+    type: expense
+    vat: no
+    match: ["discovery health", "bonitas", "medshield", "momentum health", "gems ", "polmed", "fedhealth",
+            "bestmed", "pharmacy", "clicks", "dis-chem", "dischem", "hospital", "netcare", "mediclinic",
+            "life healthcare", "health"]
 
   - name: "Insurance"
     type: expense
     vat: no  # check each: short-term cover includes VAT, life cover doesn't
-    match: ["insurance", "insure", "outsurance", "santam", "hollard"]
+    match: ["insurance", "insure", "outsurance", "santam", "hollard", "king price", "kingprice", "1st for women",
+            "first for women", "momentum", "old mutual", "sanlam", "liberty", "metropolitan", "clientele",
+            "assupol", "avbob", "miway", "dialdirect", "auto & general", "tracker", "cartrack", "netstar"]
 
-  # --- Not profit ---------------------------------------------------------
-  # Cash taken out isn't an expense in itself - what it was spent on is.
-  - name: "Cash withdrawals"
-    type: transfer
-    match: ["atm withdrawal", "cash withdrawal", "cash sent"]
+  - name: "Telephone, airtime & data"
+    type: expense
+    match: ["airtime", "prepaid mobile", "data bundle", "prepaid data", "vodacom", "voda", "mtn", "cell c",
+            "telkom", "afrihost", "webafrica", "openserve", "vumatel", "smc*rain", "rain cape town", "vuma"]
+
+  - name: "Water & electricity"
+    type: expense
+    match: ["electricity", "prepaid elec", "eskom", "municipal", "water purchase", "city of ", "municipality"]
+
+  - name: "Fuel"
+    type: expense
+    vat: no  # petrol and diesel are zero-rated
+    match: ["engen", "sasol", "shell ", "caltex", "astron energy", "totalenergies", "total garage", "puma energy",
+            "bp express", "fuel", "petrol"]
+
+  - name: "Meals & takeaways"
+    type: expense
+    match: ["takeaways", "uber eats", "mr d", "kfc", "mcdonald", "nando", "steers", "debonairs", "wimpy", "spur ",
+            "chicken licken", "pizza", "romans", "burger king", "fishaways", "galito", "ocean basket", "restaurant",
+            "coffee", "cafe", "bakery", "starbucks", "vida e", "pie city", "chicken lick", "mcd "]
+
+  - name: "Transport & travel"
+    type: expense
+    match: ["uber", "bolt", "taxi", "e-toll", "etoll", "sanral", "parking", "gautrain", "intercape", "greyhound",
+            "flysafair", "airlink", "safair", "lift airline", "busbud", "putco", "car hire", "avis", "europcar",
+            "transport"]
+
+  - name: "Groceries & supplies"
+    type: expense
+    match: ["groceries", "shoprite", "checkers", "pick n pay", "pnp ", "woolworths", "spar", "boxer", "usave",
+            "food lover", "makro", "ok foods", "choppies", "cambridge food", "save hyper", "fruit & veg", "butcher", "meat "]
+
+  - name: "Software & subscriptions"
+    type: expense
+    match: ["subscriptions", "apple.com", "apple com", "itunes", "google", "microsoft", "netflix", "spotify",
+            "showmax", "dstv", "multichoice", "youtube", "adobe", "zoom.us", "dropbox", "openai", "chatgpt", "canva",
+            "amazon", "prime video", "disney", "tiktok", "pubg", "playstation", "xbox", "steam"]
+
+  - name: "Equipment, clothing & retail"
+    type: expense
+    match: ["clothing", "takealot", "istore", "incredible connection", "hirsch", "game store", "builders",
+            "cashbuild", "build it", "leroy merlin", "mr price", "mrp ", "pep ", "ackermans", "edgars", "truworths",
+            "foschini", "sportscene", "totalsports", "markham", "cotton on", "superbalist", "shein"]
+
+  - name: "Payments to others"
+    type: expense
+    vat: no  # who was paid, and for what, isn't on the statement
+    match: ["payment to", "immediate payment", "payshap pay by", "pay by proxy", "payshap account off us",
+            "payshap ext debit", "rtc pmt", "account off us", "external payment", "external payshap", "eft to",
+            "digital transfer debit", "internet transfer debit", "debit order", "off-us", "payshap payment"]
+
+  # --- Income -------------------------------------------------------------
+  - name: "Payments received"
+    type: income
+    vat: if registered  # customer payments include VAT when the business is VAT-registered
+    match: ["payment received", "payment from", "payshap payment", "payshap credit", "payshap ext credit",
+            "credit transfer", "rtc credit", "eft credit", "acb credit", "direct credit", "deposit",
+            "internet transfer credit", "digital transfer credit", "immediate payment received", "real time transfer",
+            "magtape credit", "speedpoint", "yoco", "snapscan", "zapper", "ikhokha", "payfast", "ozow", "card sales",
+            "settlement"]

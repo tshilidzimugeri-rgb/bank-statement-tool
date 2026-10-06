@@ -374,9 +374,11 @@ def append_transactions(
     transactions: list[Transaction],
     categories: list[Category] | None = None,
     statement: dict | None = None,
+    reset_vat: bool = False,
 ) -> WriteResult:
     """statement: the statement's reconciliation report for the Review sheet
-    (see statement_review_row)."""
+    (see statement_review_row). reset_vat: every row's VAT Yes/No set afresh
+    from its category (after the business's VAT registration changed)."""
     categories = categories or []
     workbook_path.parent.mkdir(parents=True, exist_ok=True)
     wb = _open_workbook(workbook_path) if workbook_path.exists() else Workbook()
@@ -434,7 +436,7 @@ def append_transactions(
 
     _suggest_categories(rows)
     for row in rows:
-        if row["Category"] != was[row["Row Key"]]:
+        if reset_vat or row["Category"] != was[row["Row Key"]]:
             row["VAT"] = None  # newly categorised: take the new category's default
         if row.get("VAT") not in ("Yes", "No"):
             row["VAT"] = _vat_default(row["Category"], categories)

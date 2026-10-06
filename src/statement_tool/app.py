@@ -53,7 +53,7 @@ import statement_tool  # noqa: E402
 statement_tool.code_stamp = _CODE_STAMP
 
 from statement_tool import config as config_mod  # noqa: E402
-from statement_tool.categorize import load_categories
+from statement_tool.categorize import for_vat_registration, load_categories
 from statement_tool.checks import workbook_gaps
 from statement_tool.excel_writer import (
     VAT201_FIELDS,
@@ -120,7 +120,8 @@ settings = dataclasses.replace(
     processed_db=work_dir / "processed.db",
 )
 try:
-    categories = load_categories(settings.categories_config)
+    all_categories = load_categories(settings.categories_config)
+    categories = for_vat_registration(all_categories, st.session_state.get("vat_registered", True))
     layouts, generic = config_mod.load_bank_layouts(settings.banks_config)
     client_rules = config_mod.load_client_rules(settings.clients_config)
 except Exception as exc:  # a typo in one of the YAML files
@@ -879,6 +880,10 @@ def monthly_page(rows: list[dict], period: Period) -> None:
 def vat_page(rows: list[dict], all_rows: list[dict], period: Period) -> None:
     page_header(VAT, f"{period.label}. VAT is calculated at {VAT_RATE:.0%} on transactions marked VAT Yes - never "
                      "read from the statements.")
+    if not st.session_state.get("vat_registered", True):
+        st.info("**Not VAT-registered** - no VAT is charged on income or claimed on expenses, so every VAT figure is "
+                "R 0.00. If the business is VAT-registered, switch on **VAT-registered business** in the side menu.",
+                icon=":material/info:")
     months = vat_by_month(rows, categories)
     if not months:
         empty_state("receipt", "No VAT in this period", "There are no income or expense transactions in it.")
@@ -1042,6 +1047,18 @@ GROUP = {UPLOAD: "Data", CONTINUE: "Data", OVERVIEW: "Reports", MONTHLY: "Report
          CHECKS: "Review & export", DOWNLOAD: "Review & export"}
 CUSTOM = "Custom range of months"
 
+def _vat_registration_changed() -> None:
+    """Every workbook's VAT Yes/No worked out afresh for the new setting."""
+    now = for_vat_registration(all_categories, st.session_state["vat_registered"])
+    for book in list_workbooks(settings.output_dir):
+        try:
+            append_transactions(book, [], now, reset_vat=True)
+        except WorkbookLockedError:
+            continue
+    st.session_state["toast"] = ("VAT-registered: VAT is included in payments received" if
+                                 st.session_state["vat_registered"] else "Not VAT-registered: no VAT charged or claimed")
+
+
 if toast := st.session_state.pop("toast", None):
     st.toast(toast, icon=":material/task_alt:")
 
@@ -1050,6 +1067,10 @@ with st.sidebar:
          f'<div class="s">Statements to financial reports</div></div></div>')
     page = st.radio("Menu", list(ICONS), key="page", format_func=lambda p: f"{ICONS[p]}  {p}",
                     label_visibility="collapsed")
+    st.toggle("VAT-registered business", value=True, key="vat_registered", on_change=_vat_registration_changed,
+              help="On: payments received include 15% VAT, and VAT on expenses is claimed. Off: the business "
+                   "isn't VAT-registered, so no VAT is charged or claimed. Changing it updates every workbook.")
+categories = for_vat_registration(all_categories, st.session_state["vat_registered"])
 account_slot = st.sidebar.container()  # filled once this run's uploads are in
 
 

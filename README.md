@@ -97,7 +97,7 @@ Better scans (straight, 300 dpi, not faded) read best.
 Three YAML files, all meant to be hand-edited - no code changes needed to
 recategorise spending, add a client, or add a straightforward new bank:
 
-- **`config/categories.yaml`** - the reporting categories. Each has a type
+- **`config/categories.yaml`** - the reporting categories: general South African rules (bank fees, fuel, groceries, takeaways, transport, airtime, electricity, insurance, medical, salaries, SARS, loans, own-account transfers, payments received and made...). Rules apply to money in or money out as fits the category, and VAT follows the **VAT-registered business** switch in the side menu (off: no VAT charged or claimed). Each has a type
   (`income`, `expense`, `transfer` between own accounts, or `drawings` for
   personal money out) and the description text that puts a transaction in
   it. Unmatched transactions land in "Other income/expenses
